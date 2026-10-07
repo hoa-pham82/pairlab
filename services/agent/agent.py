@@ -66,6 +66,7 @@ class AgentAnswer:
     output_tokens: int = 0
     blocked: bool = False
     finished: bool = True
+    variant: str = "champion"
 
 
 class ToolAgent:
@@ -87,8 +88,18 @@ class ToolAgent:
         self._telemetry = telemetry or AgentTelemetry()
         self._max_steps = max_steps
 
-    async def run(self, question: str) -> AgentAnswer:
-        """Answer ``question``, refusing prompts that contain personal data."""
+    async def run(
+        self,
+        question: str,
+        llm: "ChatClient | None" = None,
+        variant: str = "champion",
+    ) -> AgentAnswer:
+        """Answer ``question``, refusing prompts that contain personal data.
+
+        Args:
+            llm: Override the agent's default LLM for this call (used for A/B routing).
+            variant: Label attached to LLM telemetry; use ``"champion"`` or ``"challenger"``.
+        """
         self._telemetry.agent_calls.labels(self.name).inc()
         pii = find_pii(question)
         if pii:
@@ -99,8 +110,10 @@ class ToolAgent:
                 tool_calls=[],
                 steps=0,
                 blocked=True,
+                variant=variant,
             )
 
+        active_llm = llm or self._llm
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": question},
@@ -110,12 +123,12 @@ class ToolAgent:
         tokens_in = tokens_out = 0
 
         for step in range(1, self._max_steps + 1):
-            result = await self._llm.chat(messages, schemas)
-            self._record(result)
+            result = await active_llm.chat(messages, schemas)
+            self._record(result, variant)
             tokens_in += result.input_tokens
             tokens_out += result.output_tokens
             if not result.tool_calls:
-                return AgentAnswer(result.content, calls, step, tokens_in, tokens_out)
+                return AgentAnswer(result.content, calls, step, tokens_in, tokens_out, variant=variant)
 
             messages.append(result.message)
             for request in result.tool_calls:
@@ -136,6 +149,7 @@ class ToolAgent:
             tokens_in,
             tokens_out,
             finished=False,
+            variant=variant,
         )
 
     async def _run_tool(self, request: dict) -> ToolCall:
@@ -161,19 +175,28 @@ class ToolAgent:
             self._telemetry.tool_failures.labels(name or "unknown").inc()
         return call
 
-    def _record(self, result: ChatResult) -> None:
-        self._telemetry.tokens.labels(result.model, "input").inc(result.input_tokens)
-        self._telemetry.tokens.labels(result.model, "output").inc(result.output_tokens)
-        self._telemetry.round_trip.labels(result.model).observe(result.round_trip_seconds)
+    def _record(self, result: ChatResult, variant: str = "champion") -> None:
+        self._telemetry.tokens.labels(result.model, "input", variant).inc(result.input_tokens)
+        self._telemetry.tokens.labels(result.model, "output", variant).inc(result.output_tokens)
+        self._telemetry.round_trip.labels(result.model, variant).observe(result.round_trip_seconds)
         if result.ttft_seconds is not None:
-            self._telemetry.ttft.labels(result.model).observe(result.ttft_seconds)
+            self._telemetry.ttft.labels(result.model, variant).observe(result.ttft_seconds)
 
 
-def agent_as_tool(agent: ToolAgent, name: str, description: str) -> ToolSpec:
-    """Expose an agent as a tool, so a coordinator can delegate a pair to it."""
+def agent_as_tool(
+    agent: ToolAgent,
+    name: str,
+    description: str,
+    variant: str = "champion",
+) -> ToolSpec:
+    """Expose an agent as a tool, so a coordinator can delegate a pair to it.
+
+    Args:
+        variant: A/B variant label forwarded to sub-agent telemetry.
+    """
 
     async def ask(pair_id: str) -> dict:
-        answer = await agent.run(f"Report on pair {pair_id}.")
+        answer = await agent.run(f"Report on pair {pair_id}.", variant=variant)
         failed = [call.name for call in answer.tool_calls if call.failed]
         report = {"agent": agent.name, "answer": answer.text}
         if failed or not answer.finished:

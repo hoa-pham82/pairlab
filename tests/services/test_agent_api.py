@@ -136,10 +136,10 @@ def test_metrics_expose_http_llm_agent_and_tool_series():
         'agent_api_requests_total{route="/ask",status="200"} 2.0',
         'agent_calls_total{agent="coordinator"} 2.0',
         'agent_tool_calls_total{tool="check_regime"} 1.0',
-        'llm_tokens_total{kind="input",model="fake"} 25.0',
-        'llm_tokens_total{kind="output",model="fake"} 10.0',
-        'llm_round_trip_seconds_count{model="fake"} 2.0',
-        'llm_time_to_first_token_seconds_count{model="fake"} 1.0',
+        'llm_tokens_total{kind="input",model="fake",variant="champion"} 25.0',
+        'llm_tokens_total{kind="output",model="fake",variant="champion"} 10.0',
+        'llm_round_trip_seconds_count{model="fake",variant="champion"} 2.0',
+        'llm_time_to_first_token_seconds_count{model="fake",variant="champion"} 1.0',
         'agent_pii_blocked_total{kind="card_number"} 1.0',
     ):
         assert expected in text
@@ -209,7 +209,7 @@ class TestABRouting:
             'agent_ab_requests_total{agent="coordinator",outcome="answered",variant="challenger"} 1.0',
             'agent_ab_requests_total{agent="coordinator",outcome="blocked",variant="challenger"} 1.0',
             'agent_ab_seconds_count{agent="coordinator",variant="challenger"} 2.0',
-            'llm_tokens_total{kind="output",model="fake-b"} 10.0',
+            'llm_tokens_total{kind="output",model="fake-b",variant="challenger"} 10.0',
         ):
             assert expected in text
 

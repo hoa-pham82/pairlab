@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "svc.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  # Rolling update: start a new pod and wait until it is ready before removing an old one.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels: {{- include "svc.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "svc.selector" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.containerPort | quote }}
+        prometheus.io/path: {{ .Values.metrics.path }}
+        checksum/secret: {{ toJson .Values.secretEnv | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      terminationGracePeriodSeconds: {{ add .Values.shutdown.drainSeconds 20 }}
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.command }}
+          command: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+          env:
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- if .Values.secretEnv }}
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}
+          {{- end }}
+          livenessProbe:
+            httpGet: {path: {{ .Values.probes.livenessPath }}, port: http}
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          readinessProbe:
+            httpGet: {path: {{ .Values.probes.readinessPath }}, port: http}
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          # Keep serving while the pod is removed from the Service's endpoints,
+          # so requests already routed here during a rollout are not dropped.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ .Values.shutdown.drainSeconds | quote }}]
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}

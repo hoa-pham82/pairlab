@@ -1,0 +1,6 @@
+apiVersion: v2
+name: pairlab-service
+description: One pairlab web service (signal API, regime API, MCP server or agent API)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,8 @@
+image: {repository: pairlab-signal_api, tag: v1}
+command: ["python", "-m", "services.mcp_server.server"]
+containerPort: 8002
+service: {type: NodePort, port: 8002, nodePort: 30082}
+probes: {livenessPath: /healthz, readinessPath: /healthz}
+env:
+  SIGNAL_API_URL: http://signal-api:8000
+  REGIME_API_URL: http://regime-api:8001

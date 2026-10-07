@@ -1,0 +1,4 @@
+# Copy to terraform.tfvars and fill in — never commit terraform.tfvars
+project_id   = "your-gcp-project-id"
+region       = "us-central1"
+machine_type = "e2-standard-4"

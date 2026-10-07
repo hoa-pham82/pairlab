@@ -1,0 +1,43 @@
+name: CD — Streaming Jobs
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Streaming job to deploy"
+        required: true
+        type: choice
+        options: [flink, online_writer, both]
+  push:
+    branches: [main]
+    paths:
+      - "platform/flink/sql/**"
+      - "services/online_writer/**"
+
+jobs:
+  deploy-streaming:
+    runs-on: self-hosted
+    environment: production
+    env:
+      PAIRLAB_ENV_FILE: ${{ secrets.PAIRLAB_ENV_FILE }}
+      PAIRLAB_RELEASE: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release to deploy dir
+        run: bash scripts/ci/release.sh
+
+      # Job 1 — Flink SQL: ticks → 1-min bars → Kafka + Postgres offline store
+      - name: Deploy Flink job (ticks_to_bars_1m)
+        if: inputs.job == 'flink' || inputs.job == 'both' || github.event_name == 'push'
+        run: bash scripts/ci/deploy_flink_job.sh
+
+      # Job 2 — online_writer: bars.1m → Feast Redis online store
+      - name: Build online_writer image
+        if: inputs.job == 'online_writer' || inputs.job == 'both' || github.event_name == 'push'
+        run: bash scripts/ci/build_image.sh online_writer
+
+      - name: Deploy online_writer and verify consumer
+        if: inputs.job == 'online_writer' || inputs.job == 'both' || github.event_name == 'push'
+        run: bash scripts/ci/deploy_online_writer.sh

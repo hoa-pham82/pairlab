@@ -1,0 +1,49 @@
+name: CD — APIs
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service to deploy"
+        required: true
+        type: choice
+        options: [signal_api, regime_api, both]
+  push:
+    branches: [main]
+    paths:
+      - "services/signal_api/**"
+      - "services/regime_api/**"
+      - "services/common.py"
+      - "deploy/helm/**"
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted
+    environment: production
+    env:
+      PAIRLAB_ENV_FILE: ${{ secrets.PAIRLAB_ENV_FILE }}
+      PAIRLAB_RELEASE: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release to deploy dir
+        run: bash scripts/ci/release.sh
+
+      - name: Build signal_api (pulls production model from MLflow)
+        if: inputs.service == 'signal_api' || inputs.service == 'both' || github.event_name == 'push'
+        id: build_signal
+        run: bash scripts/ci/build_api.sh signal_api
+
+      - name: Build regime_api
+        if: inputs.service == 'regime_api' || inputs.service == 'both' || github.event_name == 'push'
+        run: bash scripts/ci/build_api.sh regime_api
+
+      - name: Deploy signal_api to kind (--atomic rollback)
+        if: inputs.service == 'signal_api' || inputs.service == 'both' || github.event_name == 'push'
+        run: |
+          bash scripts/ci/deploy_api.sh signal_api "${{ steps.build_signal.outputs.MODEL_VERSION }}"
+
+      - name: Deploy regime_api to kind (--atomic rollback)
+        if: inputs.service == 'regime_api' || inputs.service == 'both' || github.event_name == 'push'
+        run: bash scripts/ci/deploy_api.sh regime_api

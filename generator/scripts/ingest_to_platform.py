@@ -25,6 +25,8 @@ import logging
 import sys
 from pathlib import Path
 
+import os
+
 import boto3
 import numpy as np
 import pandas as pd
@@ -48,8 +50,8 @@ def _s3_client(endpoint: str):
     return boto3.client(
         "s3",
         endpoint_url=endpoint,
-        aws_access_key_id="test",
-        aws_secret_access_key="test",
+        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID", "pairlabs3"),
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY", "pairlabs3key"),
         region_name="us-east-1",
     )
 

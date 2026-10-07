@@ -144,18 +144,26 @@ def _load_challenger() -> Model | None:
 
 
 def _load_model() -> Model:
-    """Load from the MLflow registry if ``MLFLOW_TRACKING_URI`` is set, else from a file.
+    """Load the champion from the MLflow registry or from a file, per ``MODEL_SOURCE``.
 
-    Registry: ``MODEL_NAME`` (default ``meta_label``) at ``MODEL_ALIAS`` (default
-    ``production``). File: ``MODEL_PATH`` (default ``models/meta_label.joblib``).
+    ``MODEL_SOURCE`` defaults to ``registry`` when ``MLFLOW_TRACKING_URI`` is set, else
+    ``file``. Registry: ``MODEL_NAME`` (default ``meta_label``) at ``MODEL_ALIAS``
+    (default ``production``). File: ``MODEL_PATH`` (default ``models/meta_label.joblib``),
+    reported as ``MODEL_VERSION`` when set (CI bakes the production model in this way).
     """
     from services.signal_api.sources import JoblibModel, MlflowModel
 
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
-    if tracking_uri:
+    source = os.environ.get("MODEL_SOURCE") or ("registry" if tracking_uri else "file")
+    if source == "registry":
         return MlflowModel(
             tracking_uri,
             os.environ.get("MODEL_NAME", "meta_label"),
             os.environ.get("MODEL_ALIAS", "production"),
         )
-    return JoblibModel(os.environ.get("MODEL_PATH", "models/meta_label.joblib"))
+    if source != "file":
+        raise ValueError(f"MODEL_SOURCE must be 'registry' or 'file', got {source!r}")
+    return JoblibModel(
+        os.environ.get("MODEL_PATH", "models/meta_label.joblib"),
+        os.environ.get("MODEL_VERSION"),
+    )

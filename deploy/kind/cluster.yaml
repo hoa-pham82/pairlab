@@ -1,0 +1,17 @@
+# Local kind cluster for the Kubernetes demos.
+# Create:  kind create cluster --name pairlab --config deploy/kind/cluster.yaml --kubeconfig deploy/kind/kubeconfig
+# Always pass --kubeconfig deploy/kind/kubeconfig to kubectl and helm, so the
+# machine's default kubeconfig (and its current context) is never touched.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080   # signal_api NodePort
+        hostPort: 30080
+      - containerPort: 30081   # regime_api NodePort
+        hostPort: 30081
+      - containerPort: 30082   # mcp_server NodePort
+        hostPort: 30082
+      - containerPort: 30083   # agent_api NodePort
+        hostPort: 30083

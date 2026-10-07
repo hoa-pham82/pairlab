@@ -1,9 +1,10 @@
-"""Upload generated Parquet files to S3-compatible storage (LocalStack / MinIO)."""
+"""Upload generated Parquet files to S3-compatible storage (MinIO)."""
 
 from __future__ import annotations
 
 import io
 import logging
+import os
 from pathlib import Path
 
 import boto3
@@ -13,6 +14,8 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://localhost:4566"
 _DEFAULT_BUCKET = "vendor-raw"
+_DEFAULT_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID", "pairlabs3")
+_DEFAULT_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "pairlabs3key")
 
 
 def _client(endpoint: str, access_key: str, secret_key: str):
@@ -30,8 +33,8 @@ def upload_parquet(
     key: str,
     bucket: str = _DEFAULT_BUCKET,
     endpoint: str = _DEFAULT_ENDPOINT,
-    access_key: str = "test",
-    secret_key: str = "test",
+    access_key: str = _DEFAULT_ACCESS_KEY,
+    secret_key: str = _DEFAULT_SECRET_KEY,
 ) -> str:
     """Upload a DataFrame as Parquet to S3. Returns the s3://bucket/key URI."""
     buf = io.BytesIO()
@@ -50,8 +53,8 @@ def upload_parquet_partitioned(
     partition_col: str = "dt",
     bucket: str = _DEFAULT_BUCKET,
     endpoint: str = _DEFAULT_ENDPOINT,
-    access_key: str = "test",
-    secret_key: str = "test",
+    access_key: str = _DEFAULT_ACCESS_KEY,
+    secret_key: str = _DEFAULT_SECRET_KEY,
 ) -> list[str]:
     """Upload a DataFrame partitioned by date column. Returns list of S3 URIs."""
     df = df.copy()
@@ -74,8 +77,8 @@ def upload_file(
     key: str,
     bucket: str = _DEFAULT_BUCKET,
     endpoint: str = _DEFAULT_ENDPOINT,
-    access_key: str = "test",
-    secret_key: str = "test",
+    access_key: str = _DEFAULT_ACCESS_KEY,
+    secret_key: str = _DEFAULT_SECRET_KEY,
 ) -> str:
     """Upload any local file to S3. Returns the s3://bucket/key URI."""
     s3 = _client(endpoint, access_key, secret_key)

@@ -1,0 +1,45 @@
+# Defaults for one service; per-service files live in deploy/helm/values/.
+image:
+  repository: pairlab-signal_api
+  tag: v1
+  pullPolicy: IfNotPresent   # images are loaded into kind, not pulled
+
+command: []                  # empty = the image's default command
+containerPort: 8000
+
+replicaCount: 2
+
+service:
+  type: NodePort
+  port: 8000
+  nodePort: null             # set to expose on the kind node
+
+probes:
+  livenessPath: /healthz
+  readinessPath: /readyz
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 6
+
+shutdown:
+  drainSeconds: 8            # wait before stopping, so in-flight traffic drains
+
+env: {}                      # plain environment variables
+secretEnv: {}                # stored in a Secret, injected as environment variables
+
+resources:
+  requests: {cpu: 100m, memory: 300Mi}
+  limits: {cpu: "1", memory: 900Mi}
+
+metrics:
+  path: /metrics
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  prometheusAddress: http://prometheus.monitoring.svc:9090
+  query: ""                  # PromQL returning one number, e.g. requests per second
+  threshold: "20"            # scale out when query / replicas exceeds this
+  cooldownSeconds: 60
+  scaleDownStabilizationSeconds: 60

@@ -48,6 +48,11 @@ with DAG(
         task_id="train",
         bash_command=f"{ML_PYTHON} -m ml.pipeline --feature-repo {FEAST_REPO}",
         cwd=WORKDIR,
+        env={
+            "AWS_ACCESS_KEY_ID": "{{ var.value.minio_access_key }}",
+            "AWS_SECRET_ACCESS_KEY": "{{ var.value.minio_secret_key }}",
+        },
+        append_env=True,
         doc_md="Version the training data, train, evaluate, and register the model.",
     )
 

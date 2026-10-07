@@ -1,12 +1,14 @@
 # pairlab platform stack
 # Usage:
-#   core only:      docker compose -f platform/compose.yml --profile core up -d
-#   + streaming:    docker compose -f platform/compose.yml --profile core --profile stream up -d
-#   + platform:     docker compose -f platform/compose.yml --profile core --profile stream --profile platform up -d
+#   core only:      docker compose -f platform/compose.yml --env-file ../.env --profile core up -d
+#   + streaming:    docker compose -f platform/compose.yml --env-file ../.env --profile core --profile stream up -d
+#   + platform:     docker compose -f platform/compose.yml --env-file ../.env --profile core --profile stream --profile platform up -d
 #   + ml:           add --profile ml         (MLflow)
 #   + obs:          add --profile obs        (Prometheus, Grafana, cAdvisor, Pushgateway)
 #   + llm:          add --profile llm        (llama.cpp — requires models/ dir, see scripts/download_model.sh)
-#   all:            docker compose -f platform/compose.yml --profile core --profile stream --profile platform --profile ml --profile obs --profile llm up -d
+#   + gateway:      add --profile gateway    (NGINX: Basic Auth + rate-limit + HTTPS on port 8443/8444)
+#   all:            docker compose -f platform/compose.yml --env-file ../.env --profile core --profile stream --profile platform --profile ml --profile obs --profile llm --profile gateway up -d
+# Note: --env-file ../.env is required so MINIO_ROOT_USER / MINIO_ROOT_PASSWORD are resolved.
 
 x-logging: &default-logging
   driver: "json-file"
@@ -40,25 +42,26 @@ services:
     logging: *default-logging
 
   # LocalStack provides S3-compatible storage (same API as MinIO).
-  # Use: AWS_ACCESS_KEY_ID=test, AWS_SECRET_ACCESS_KEY=test,
-  #      endpoint_url=http://localstack:4566
+  # Use: AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}, AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD},
+  #      endpoint_url=http://minio:4566  (S3-compatible; port kept at 4566 for compatibility)
   minio:
-    image: localstack/localstack:3.0
+    image: cgr.dev/chainguard/minio:latest
     profiles: [core]
     environment:
-      SERVICES: s3
-      AWS_DEFAULT_REGION: us-east-1
-      LOCALSTACK_AUTH_TOKEN: ""
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --address ":4566" --console-address ":9001"
     ports:
-      - "4566:4566"   # unified S3 endpoint (maps to 9000 in env vars)
+      - "4566:4566"   # S3 API
+      - "9001:9001"   # MinIO console (http://localhost:9001)
     volumes:
-      - minio_data:/var/lib/localstack
+      - minio_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
-      interval: 15s
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/4566' 2>/dev/null"]
+      interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 20s
+      start_period: 15s
     logging: *default-logging
 
   minio-init:
@@ -68,8 +71,8 @@ services:
       minio:
         condition: service_healthy
     environment:
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       AWS_DEFAULT_REGION: us-east-1
     entrypoint: >
       /bin/sh -c "
@@ -204,6 +207,29 @@ services:
   # PLATFORM profile: Spark · Airflow
   # ──────────────────────────────────────────────────────────
 
+  # Stream job 2: bars.1m → Feast online store (Redis). Job 1 is the Flink SQL job.
+  online_writer:
+    build:
+      context: ..
+      dockerfile: services/online_writer/Dockerfile
+    image: pairlab-online_writer:${ONLINE_WRITER_TAG:-latest}
+    profiles: [stream]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+      BARS_TOPIC: bars.1m
+      CONSUMER_GROUP: online-writer
+      FEAST_REPO: /app/platform/feature_repo
+      FEAST_FS_YAML_FILE_PATH: /app/platform/feature_repo/feature_store.docker.yaml
+    ports:
+      - "9108:9108"   # Prometheus metrics
+    restart: unless-stopped
+    logging: *default-logging
+
   spark-master:
     image: apache/spark:3.5.3
     profiles: [platform]
@@ -212,8 +238,8 @@ services:
     environment:
       SPARK_MASTER_WEBUI_PORT: "8082"
       SPARK_MASTER_PORT: "7077"
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       AWS_DEFAULT_REGION: us-east-1
     ports:
       - "8082:8082"   # Spark Master Web UI
@@ -221,7 +247,7 @@ services:
     volumes:
       - ./spark/jars:/opt/spark/extra-jars:ro
       - ./spark/jobs:/opt/spark/jobs:ro
-      - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+      - ./spark/conf:/opt/spark/conf:ro
       - spark_warehouse:/opt/spark/warehouse
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8082"]
@@ -242,13 +268,13 @@ services:
     environment:
       SPARK_WORKER_MEMORY: 2g
       SPARK_WORKER_CORES: "2"
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       AWS_DEFAULT_REGION: us-east-1
     volumes:
       - ./spark/jars:/opt/spark/extra-jars:ro
       - ./spark/jobs:/opt/spark/jobs:ro
-      - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+      - ./spark/conf:/opt/spark/conf:ro
     logging: *default-logging
 
   airflow:
@@ -271,11 +297,11 @@ services:
       # Connection strings (accessible as AIRFLOW_CONN_* or via UI)
       AIRFLOW_CONN_POSTGRES_DWH: "postgresql://pairlab:pairlab@postgres:5432/pairlab"
       AIRFLOW_CONN_SPARK_DEFAULT: "spark://spark-master:7077"
-      AIRFLOW_CONN_MINIO_S3: "s3://test:test@minio:4566"
+      AIRFLOW_CONN_MINIO_S3: "s3://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:4566"
       # Variables
       AIRFLOW_VAR_MINIO_ENDPOINT: "http://minio:4566"
-      AIRFLOW_VAR_MINIO_ACCESS_KEY: "test"
-      AIRFLOW_VAR_MINIO_SECRET_KEY: "test"
+      AIRFLOW_VAR_MINIO_ACCESS_KEY: "${MINIO_ROOT_USER}"
+      AIRFLOW_VAR_MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
       AIRFLOW_VAR_SPARK_MASTER: "spark://spark-master:7077"
       AIRFLOW_VAR_S3_ENDPOINT: "http://minio:4566"
       AIRFLOW_VAR_PG_JDBC_URL: "jdbc:postgresql://postgres:5432/pairlab"
@@ -290,7 +316,8 @@ services:
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./spark/jobs:/opt/airflow/spark_jobs:ro
-      - ./feature_repo:/opt/airflow/feature_repo:ro
+      # rw: feast apply and materialize write the registry file under data/
+      - ./feature_repo:/opt/airflow/feature_repo
       - ../ml:/opt/airflow/ml:ro
       - airflow_logs:/opt/airflow/logs
       # docker.sock lets BashOperators run `docker exec spark-master spark-submit ...`
@@ -313,6 +340,48 @@ services:
     logging: *default-logging
 
   # ──────────────────────────────────────────────────────────
+  # SECRETS profile: Vault (dev mode) + vault-init
+  # Access: http://localhost:8200  Token: VAULT_TOKEN from .env
+  # Paths seeded: secret/minio, secret/postgres, secret/gateway
+  # ──────────────────────────────────────────────────────────
+
+  vault:
+    image: hashicorp/vault:1.17
+    profiles: [secrets]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN:-pairlab-root}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    cap_add: [IPC_LOCK]
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD-SHELL", "vault status -address=http://localhost:8200 2>/dev/null | grep -q 'Initialized.*true' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    logging: *default-logging
+
+  vault-init:
+    image: hashicorp/vault:1.17
+    profiles: [secrets]
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-pairlab-root}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      GATEWAY_USER: ${GATEWAY_USER:-pairlab}
+      GATEWAY_PASSWORD: ${GATEWAY_PASSWORD:-pairlab}
+    volumes:
+      - ./docker/vault-init.sh:/vault-init.sh:ro
+    entrypoint: ["/bin/sh", "/vault-init.sh"]
+    restart: "no"
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────────────────
   # ML profile: MLflow · signal_api · regime_api
   # ──────────────────────────────────────────────────────────
 
@@ -328,8 +397,8 @@ services:
         condition: service_healthy
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:4566
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
     command: >
       server
         --backend-store-uri postgresql+psycopg2://pairlab:pairlab@postgres:5432/mlflow
@@ -337,6 +406,7 @@ services:
         --serve-artifacts
         --host 0.0.0.0
         --port 5000
+        --workers 1
         --allowed-hosts mlflow,mlflow:5000,localhost,localhost:5001,localhost:5000,127.0.0.1,127.0.0.1:5001
     ports:
       - "5001:5000"
@@ -362,6 +432,10 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_ENABLE_PROXY_MULTIPART_DOWNLOAD: "false"
       TAKE_THRESHOLD: "0.6"
+      CHALLENGER_SHARE: "0.5"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4318
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-pairlab-root}
     ports:
       - "8000:8000"
     healthcheck:
@@ -382,6 +456,7 @@ services:
         condition: service_healthy
     environment:
       POSTGRES_URL: postgresql://pairlab:pairlab@postgres:5432/pairlab
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4318
     ports:
       - "8001:8001"
     healthcheck:
@@ -416,6 +491,8 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./docker/grafana-datasources.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./docker/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/pairlab.yml:ro
+      - ./docker/grafana-dashboard-pairlab.json:/etc/grafana/provisioning/dashboards/pairlab-main.json:ro
     ports:
       - "3000:3000"
     logging: *default-logging
@@ -439,6 +516,42 @@ services:
       - "9091:9091"
     logging: *default-logging
 
+  loki:
+    image: grafana/loki:2.9.10
+    profiles: [obs]
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ./docker/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    logging: *default-logging
+
+  promtail:
+    image: grafana/promtail:2.9.10
+    profiles: [obs]
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - ./docker/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    logging: *default-logging
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    profiles: [obs]
+    command: -config.file=/etc/tempo/tempo-config.yaml
+    volumes:
+      - ./docker/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    logging: *default-logging
+
   # ──────────────────────────────────────────────────────────
   # LLM profile: llama.cpp inference server
   # ──────────────────────────────────────────────────────────
@@ -459,9 +572,89 @@ services:
       --metrics
       -np 2
       -c 4096
-      -t 4
+      -t 5
     ports:
       - "8085:8080"
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────────────────
+  # LLM profile: MCP server + analyst agent API
+  # Both share the signal_api image (fastmcp + httpx already installed)
+  # ──────────────────────────────────────────────────────────
+
+  mcp_server:
+    build:
+      context: ..
+      dockerfile: services/signal_api/Dockerfile
+    profiles: [llm]
+    command: ["python", "-m", "services.mcp_server.server"]
+    environment:
+      SIGNAL_API_URL: http://signal_api:8000
+      REGIME_API_URL: http://regime_api:8001
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      signal_api:
+        condition: service_healthy
+      regime_api:
+        condition: service_healthy
+    logging: *default-logging
+
+  agent_api:
+    build:
+      context: ..
+      dockerfile: services/signal_api/Dockerfile
+    profiles: [llm]
+    command: ["uvicorn", "services.agent.app:build_default_app", "--factory", "--host", "0.0.0.0", "--port", "8003"]
+    environment:
+      LLM_BASE_URL: http://llama-cpp:8080
+      MCP_URL: http://mcp_server:8002/mcp
+      CHALLENGER_SHARE: "0.5"
+      CHAMPION_PROMPTS: default
+      CHALLENGER_PROMPTS: brief
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      mcp_server:
+        condition: service_healthy
+      llama-cpp:
+        condition: service_started
+    restart: on-failure
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────────────────
+  # GATEWAY profile: NGINX — Basic Auth + rate-limit + HTTPS
+  # Access: https://localhost:8443/signal/, /regime/, /mlflow/, /grafana/
+  # Credentials: GATEWAY_USER / GATEWAY_PASSWORD from .env
+  # ──────────────────────────────────────────────────────────
+
+  nginx:
+    build:
+      context: ./docker
+      dockerfile: nginx.Dockerfile
+    profiles: [gateway]
+    environment:
+      GATEWAY_USER: ${GATEWAY_USER:-pairlab}
+      GATEWAY_PASSWORD: ${GATEWAY_PASSWORD:-pairlab}
+    ports:
+      - "8443:443"   # HTTPS — https://localhost:8443/signal/
+      - "8444:80"    # HTTP — redirects to HTTPS
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/healthz 2>/dev/null | grep -q ok || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     logging: *default-logging
 
 volumes:
@@ -471,6 +664,8 @@ volumes:
   redpanda_data:
   flink_checkpoints:
   spark_warehouse:
+  loki_data:
+  tempo_data:
   airflow_logs:
   grafana_data:
   mlflow_data:

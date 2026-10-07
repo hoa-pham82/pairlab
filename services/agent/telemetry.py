@@ -30,20 +30,20 @@ class AgentTelemetry:
         self.tokens = Counter(
             "llm_tokens_total",
             "Tokens by kind (input, output)",
-            ["model", "kind"],
+            ["model", "kind", "variant"],
             registry=self.registry,
         )
         self.round_trip = Histogram(
             "llm_round_trip_seconds",
             "Time for one LLM generation",
-            ["model"],
+            ["model", "variant"],
             buckets=_SECONDS,
             registry=self.registry,
         )
         self.ttft = Histogram(
             "llm_time_to_first_token_seconds",
             "Time until the first generated token",
-            ["model"],
+            ["model", "variant"],
             buckets=_SECONDS,
             registry=self.registry,
         )

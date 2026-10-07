@@ -22,15 +22,12 @@ from pyspark.sql.functions import (
     approx_count_distinct,
     col,
     current_timestamp,
-    floor,
     lit,
     rand,
     row_number,
     to_date,
-    to_timestamp,
-    when,
 )
-from pyspark.sql.types import DoubleType, LongType, ShortType, StringType, TimestampType
+from pyspark.sql.types import DoubleType, ShortType, StringType
 from pyspark.sql.window import Window
 
 _N_SALTS = 8  # salt buckets to break up skewed symbol partitions
@@ -80,18 +77,27 @@ def _normalize_schema(df):
     return df
 
 
-def _quarantine_bad_rows(df, spark, s3_endpoint: str):
-    """Tag rows that fail validation, write bad ones to quarantine, return good ones."""
-    from pyspark.sql.functions import when as _when
-    df_tagged = df.withColumn(
-        "_bad",
+def _split_bad_rows(df):
+    """Return (good, bad): bad rows miss a key, have negative volume, or high < low.
+
+    A check that evaluates to null (e.g. null volume) counts as bad, so no row is lost.
+    """
+    from pyspark.sql.functions import coalesce
+    failed = (
         col("symbol").isNull() |
         col("ts").isNull() |
         (col("volume") < 0) |
         (col("high") < col("low"))
     )
+    df_tagged = df.withColumn("_bad", coalesce(failed, lit(True)))
     bad = df_tagged.filter(col("_bad")).drop("_bad")
     good = df_tagged.filter(~col("_bad")).drop("_bad")
+    return good, bad
+
+
+def _quarantine_bad_rows(df, spark, s3_endpoint: str):
+    """Write rows that fail validation to quarantine and return the good ones."""
+    good, bad = _split_bad_rows(df)
     # Write bad rows without counting first (lazy evaluation)
     bad.write.format("delta").mode("append").save("s3a://delta-lake/bronze/rejected_daily_bars/")
     print("  Quarantine write done (bad rows → bronze/rejected_daily_bars/)")

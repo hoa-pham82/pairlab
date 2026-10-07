@@ -1,0 +1,27 @@
+{{- if .Values.autoscaling.enabled }}
+# KEDA: scale the Deployment on a Prometheus query (requests per second).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "svc.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ .Release.Name }}
+  minReplicaCount: {{ .Values.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.autoscaling.maxReplicas }}
+  cooldownPeriod: {{ .Values.autoscaling.cooldownSeconds }}
+  pollingInterval: 10
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          # Kubernetes waits this long after load drops before removing pods.
+          stabilizationWindowSeconds: {{ .Values.autoscaling.scaleDownStabilizationSeconds }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.autoscaling.prometheusAddress }}
+        query: {{ required "autoscaling.query is required" .Values.autoscaling.query | quote }}
+        threshold: {{ .Values.autoscaling.threshold | quote }}
+{{- end }}

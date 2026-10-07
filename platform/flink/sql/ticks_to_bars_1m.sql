@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS bars_1m_pg (
     low          DOUBLE,
     `close`      DOUBLE,
     volume       DOUBLE,
-    tick_count   BIGINT
+    tick_count   BIGINT,
+    PRIMARY KEY (symbol, window_start) NOT ENFORCED
 ) WITH (
     'connector'  = 'jdbc',
     'url'        = 'jdbc:postgresql://postgres:5432/pairlab',
@@ -90,8 +91,14 @@ CREATE TABLE IF NOT EXISTS bars_1m_pg (
 );
 
 -- ────────────────────────────────────────────────────────────────────────────
--- 5. Main aggregation: tumbling 1-minute window OHLCV
+-- 5. Main aggregation: tumbling 1-minute window OHLCV.
+--    One statement set = one Flink job, so CD can cancel and resubmit it by name.
 -- ────────────────────────────────────────────────────────────────────────────
+SET 'pipeline.name' = 'ticks_to_bars_1m';
+
+EXECUTE STATEMENT SET
+BEGIN
+
 INSERT INTO bars_1m_kafka
 SELECT
     symbol,
@@ -123,3 +130,5 @@ FROM TABLE(
     TUMBLE(TABLE ticks_deduped, DESCRIPTOR(event_ts), INTERVAL '1' MINUTE)
 )
 GROUP BY symbol, window_start, window_end;
+
+END;

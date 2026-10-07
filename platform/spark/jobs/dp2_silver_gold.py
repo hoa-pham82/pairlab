@@ -22,12 +22,12 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
     current_timestamp,
-    exp,
     lag,
     lit,
-    log as spark_log,
     row_number,
-    when,
+)
+from pyspark.sql.functions import (
+    log as spark_log,
 )
 from pyspark.sql.window import Window
 
@@ -51,17 +51,22 @@ def build_spark(s3_endpoint: str, pg_url: str) -> SparkSession:
 
 # ─── Silver ──────────────────────────────────────────────────────────────────
 
-def build_silver(spark: SparkSession) -> None:
-    """Read bronze Delta, dedup on (symbol, ts), write silver."""
-    bronze = spark.read.format("delta").load("s3a://delta-lake/bronze/daily_bars/")
+def silver_from_bronze(bronze):
+    """Keep one row per (symbol, ts), preferring the newest schema version."""
     w = Window.partitionBy("symbol", "ts").orderBy(col("schema_version").desc())
-    silver = (
+    return (
         bronze
         .withColumn("_rn", row_number().over(w))
         .filter(col("_rn") == 1)
         .drop("_rn", "ingested_at")
         .withColumn("silver_ts", current_timestamp())
     )
+
+
+def build_silver(spark: SparkSession) -> None:
+    """Read bronze Delta, dedup on (symbol, ts), write silver."""
+    bronze = spark.read.format("delta").load("s3a://delta-lake/bronze/daily_bars/")
+    silver = silver_from_bronze(bronze)
     silver.write.format("delta").mode("overwrite").partitionBy("dt").save(
         "s3a://delta-lake/silver/daily_bars/"
     )
@@ -122,16 +127,21 @@ def _upsert_dim_symbol_scd2(spark: SparkSession, silver_df, s3_endpoint: str) ->
 
 # ─── Gold fact_daily_bar ──────────────────────────────────────────────────────
 
-def build_fact(spark: SparkSession, silver_df) -> None:
-    """Compute fact_daily_bar: add daily_return and log_return columns."""
+def fact_from_silver(silver_df):
+    """Add daily_return and log_return per symbol; the first bar of each symbol gets null."""
     w = Window.partitionBy("symbol").orderBy("ts")
-    fact = (
+    return (
         silver_df
         .withColumn("prev_close", lag("close", 1).over(w))
         .withColumn("daily_return", (col("close") - col("prev_close")) / col("prev_close"))
         .withColumn("log_return", spark_log(col("close") / col("prev_close")))
         .drop("prev_close", "silver_ts")
     )
+
+
+def build_fact(spark: SparkSession, silver_df) -> None:
+    """Compute fact_daily_bar and write it to Delta."""
+    fact = fact_from_silver(silver_df)
     fact.write.format("delta").mode("overwrite").partitionBy("dt").save(
         "s3a://delta-lake/gold/fact_daily_bar/"
     )

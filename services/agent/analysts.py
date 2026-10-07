@@ -63,8 +63,13 @@ def build_agents(
     check_regime: ToolSpec,
     telemetry: AgentTelemetry | None = None,
     prompts: PromptSet = DEFAULT_PROMPTS,
+    variant: str = "champion",
 ) -> dict[str, ToolAgent]:
-    """Create the features analyst, regime analyst and coordinator on shared telemetry."""
+    """Create the features analyst, regime analyst and coordinator on shared telemetry.
+
+    Args:
+        variant: A/B label written to telemetry for every LLM call in this set.
+    """
     telemetry = telemetry or AgentTelemetry()
     features = ToolAgent("features_analyst", prompts.features, llm, [get_pair_features], telemetry)
     regime = ToolAgent("regime_analyst", prompts.regime, llm, [check_regime], telemetry)
@@ -74,9 +79,12 @@ def build_agents(
         llm,
         [
             agent_as_tool(
-                features, "ask_features_analyst", "Features and model decision for a pair"
+                features, "ask_features_analyst", "Features and model decision for a pair",
+                variant=variant,
             ),
-            agent_as_tool(regime, "ask_regime_analyst", "Regime (drift) status for a pair"),
+            agent_as_tool(regime, "ask_regime_analyst", "Regime (drift) status for a pair",
+                variant=variant,
+            ),
         ],
         telemetry,
         max_steps=5,

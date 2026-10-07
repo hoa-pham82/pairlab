@@ -1,0 +1,12 @@
+image: {repository: pairlab-signal_api, tag: v1}
+command: ["uvicorn", "services.agent.app:build_default_app", "--factory", "--host", "0.0.0.0", "--port", "8003"]
+containerPort: 8003
+service: {type: NodePort, port: 8003, nodePort: 30083}
+env:
+  LLM_BASE_URL: http://llama-cpp:8080
+  MCP_URL: http://mcp-server:8002/mcp
+  CHALLENGER_SHARE: "0.5"
+  CHALLENGER_PROMPTS: brief
+autoscaling:
+  query: sum(rate(agent_api_requests_total{route="/ask"}[1m]))
+  threshold: "1"

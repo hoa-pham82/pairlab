@@ -16,8 +16,6 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sensors.python import PythonSensor
 
 FEAST_REPO = "/opt/airflow/feature_repo"
-FEAST_YAML = f"{FEAST_REPO}/feature_store.docker.yaml"
-
 default_args = {
     "owner": "pairlab",
     "retries": 1,
@@ -53,9 +51,8 @@ with DAG(
     materialize = BashOperator(
         task_id="materialize",
         bash_command=(
-            "/opt/ml-venv/bin/feast -c "
-            + FEAST_YAML
-            + " materialize-incremental $(date -u +%Y-%m-%dT%H:%M:%S)"
+            f"/opt/ml-venv/bin/feast -c {FEAST_REPO}"
+            " materialize-incremental $(date -u +%Y-%m-%dT%H:%M:%S)"
         ),
         doc_md="Push features written since the last materialize run into Redis.",
     )

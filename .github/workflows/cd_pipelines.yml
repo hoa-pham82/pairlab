@@ -1,0 +1,54 @@
+name: CD — Data Pipelines
+
+on:
+  workflow_dispatch:
+    inputs:
+      pipeline:
+        description: "Which pipeline to run"
+        required: true
+        type: choice
+        options: [dp1, dp2, dp3, feast_materialize, ml_train, all]
+  push:
+    branches: [main]
+    paths:
+      - "platform/spark/jobs/**"
+      - "platform/airflow/dags/**"
+      - "platform/feature_repo/**"
+      - "ml/**"
+
+jobs:
+  run-pipelines:
+    runs-on: self-hosted
+    environment: production
+    env:
+      PAIRLAB_ENV_FILE: ${{ secrets.PAIRLAB_ENV_FILE }}
+      PAIRLAB_RELEASE: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release to deploy dir
+        run: bash scripts/ci/release.sh
+
+      - name: DP1 — ingest bronze
+        if: inputs.pipeline == 'dp1' || inputs.pipeline == 'all' || github.event_name == 'push'
+        run: bash scripts/ci/airflow_run.sh dp1_ingest_bronze 1800
+
+      - name: DP2 — silver + gold
+        if: inputs.pipeline == 'dp2' || inputs.pipeline == 'all' || github.event_name == 'push'
+        run: bash scripts/ci/airflow_run.sh dp2_silver_gold 2700
+
+      - name: DP3 — features
+        if: inputs.pipeline == 'dp3' || inputs.pipeline == 'all' || github.event_name == 'push'
+        run: bash scripts/ci/airflow_run.sh dp3_features 2700
+
+      - name: Feast — apply + materialize
+        if: inputs.pipeline == 'feast_materialize' || inputs.pipeline == 'all' || github.event_name == 'push'
+        run: |
+          bash scripts/ci/feast.sh apply
+          bash scripts/ci/airflow_run.sh feast_materialize_dag 900
+          bash scripts/ci/feast.sh check-online KO__PEP
+
+      - name: ML — training pipeline
+        if: inputs.pipeline == 'ml_train' || inputs.pipeline == 'all'
+        run: bash scripts/ci/airflow_run.sh ml_train_dag 3600

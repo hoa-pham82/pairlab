@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Response, status
 from prometheus_client import Counter, Histogram
 from pydantic import BaseModel, Field
 
-from services.ab import CHALLENGER, CHAMPION, assign_variant
+from services.agent.ab import CHALLENGER, CHAMPION, assign_llm_variant
 from services.agent.agent import AgentAnswer, ToolAgent
 from services.agent.telemetry import AgentTelemetry
 from services.common import HttpMetrics
@@ -82,7 +82,8 @@ def create_app(
     ``/metrics`` shows HTTP, LLM, agent and tool metrics together. When
     ``challenger`` has agents, ``challenger_share`` of sessions go to it.
     """
-    assign_variant("", challenger_share)  # validates the share
+    if not 0.0 <= challenger_share <= 1.0:
+        raise ValueError(f"challenger_share must be in [0, 1], got {challenger_share}")
     challenger = challenger if challenger is not None else {}
     app = FastAPI(title="pairlab agent API", version="0.2.0", lifespan=lifespan)
     metrics.install(app)
@@ -119,7 +120,7 @@ def create_app(
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{variant} agents not loaded")
         started = time.perf_counter()
         try:
-            answer = await agent.run(request.question)
+            answer = await agent.run(request.question, variant=variant)
         except httpx.HTTPError as error:
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY, f"LLM server error: {type(error).__name__}"
@@ -134,7 +135,7 @@ def create_app(
 def _route(request: AskRequest, has_challenger: bool, share: float) -> str:
     if not has_challenger:
         return CHAMPION
-    return assign_variant(request.session_id or request.question, share)
+    return assign_llm_variant(request.session_id or request.question, share)
 
 
 def outcome(answer: AgentAnswer) -> str:
@@ -196,11 +197,15 @@ def build_default_app() -> FastAPI:
                     tools = {tool.name: tool for tool in await load_mcp_tools(mcp)}
                     features, regime = tools["get_pair_features"], tools["check_regime"]
                     agents.update(
-                        build_agents(champion_llm, features, regime, telemetry, champion_prompts)
+                        build_agents(
+                            champion_llm, features, regime, telemetry, champion_prompts,
+                            variant=CHAMPION,
+                        )
                     )
                     challenger.update(
                         build_agents(
-                            challenger_llm, features, regime, telemetry, challenger_prompts
+                            challenger_llm, features, regime, telemetry, challenger_prompts,
+                            variant=CHALLENGER,
                         )
                     )
                     yield

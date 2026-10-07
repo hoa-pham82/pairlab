@@ -25,23 +25,18 @@ import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    abs as spark_abs,
     avg,
     col,
     corr,
     current_timestamp,
-    exp,
     from_unixtime,
-    lag,
     lit,
-    log as spark_log,
-    max as spark_max,
-    min as spark_min,
-    row_number,
     sqrt,
     stddev,
-    sum as spark_sum,
     when,
+)
+from pyspark.sql.functions import (
+    sum as spark_sum,
 )
 from pyspark.sql.window import Window
 
@@ -65,15 +60,12 @@ def build_spark(s3_endpoint: str) -> SparkSession:
 
 # ─── Symbol features ─────────────────────────────────────────────────────────
 
-def build_feat_symbol(spark: SparkSession) -> None:
-    """Compute rolling volatility, return, and ATR features per symbol."""
-    fact = spark.read.format("delta").load("s3a://delta-lake/gold/fact_daily_bar/")
-
+def symbol_features(fact):
+    """Rolling volatility, return and ATR features per symbol, with Feast timestamps."""
     w21 = Window.partitionBy("symbol").orderBy("ts").rowsBetween(-20, 0)
     w63 = Window.partitionBy("symbol").orderBy("ts").rowsBetween(-62, 0)
     w14 = Window.partitionBy("symbol").orderBy("ts").rowsBetween(-13, 0)
-
-    feat = (
+    return (
         fact
         .withColumn("vol_21d", stddev("log_return").over(w21) * sqrt(lit(252.0)))
         .withColumn("vol_63d", stddev("log_return").over(w63) * sqrt(lit(252.0)))
@@ -87,6 +79,12 @@ def build_feat_symbol(spark: SparkSession) -> None:
         .drop("daily_return", "dt")
     )
 
+
+def build_feat_symbol(spark: SparkSession) -> None:
+    """Compute symbol features from fact_daily_bar and write them to Delta."""
+    fact = spark.read.format("delta").load("s3a://delta-lake/gold/fact_daily_bar/")
+    feat = symbol_features(fact)
+
     feat.write.format("delta").mode("overwrite").partitionBy("symbol").save(
         "s3a://delta-lake/gold/feat_symbol_daily/"
     )
@@ -95,51 +93,62 @@ def build_feat_symbol(spark: SparkSession) -> None:
 
 # ─── Pair features ───────────────────────────────────────────────────────────
 
-def build_feat_pair(spark: SparkSession, pairs: list[tuple[str, str]]) -> None:
-    """Compute pair-level features for cointegrated pairs.
+def pair_features(fact, sym_a: str, sym_b: str):
+    """Pair features for one pair, aligned on shared timestamps.
 
     hedge_ratio: OLS slope of close_a ~ close_b over trailing 60 bars
     zscore:      (spread - mean) / std over trailing 30 bars
     """
-    fact = spark.read.format("delta").load("s3a://delta-lake/gold/fact_daily_bar/")
-
-    rows = []
-    for sym_a, sym_b in pairs:
-        a = fact.filter(col("symbol") == sym_a).select(
-            col("ts"), col("close").alias("close_a"), col("log_return").alias("ret_a")
+    a = fact.filter(col("symbol") == sym_a).select(
+        col("ts"), col("close").alias("close_a"), col("log_return").alias("ret_a")
+    )
+    b = fact.filter(col("symbol") == sym_b).select(
+        col("ts"), col("close").alias("close_b"), col("log_return").alias("ret_b")
+    )
+    w60 = Window.orderBy("ts").rowsBetween(-59, 0)
+    w30 = Window.orderBy("ts").rowsBetween(-29, 0)
+    return (
+        a.join(b, "ts")
+        # Hedge ratio: corr(close_a, close_b) * std(a)/std(b) ≈ OLS beta
+        .withColumn(
+            "_std_b", stddev("close_b").over(w60)
         )
-        b = fact.filter(col("symbol") == sym_b).select(
-            col("ts"), col("close").alias("close_b"), col("log_return").alias("ret_b")
-        )
-        ab = a.join(b, "ts")
-
-        w60 = Window.orderBy("ts").rowsBetween(-59, 0)
-        w30 = Window.orderBy("ts").rowsBetween(-29, 0)
-
-        pair_feat = (
-            ab
-            # Hedge ratio: corr(close_a, close_b) * std(a)/std(b) ≈ OLS beta
-            .withColumn(
-                "hedge_ratio",
+        .withColumn(
+            "hedge_ratio",
+            # null when too few points (std_b null) or close_b is constant (std_b 0)
+            when(col("_std_b").isNotNull() & (col("_std_b") != 0),
                 corr("close_a", "close_b").over(w60)
                 * stddev("close_a").over(w60)
-                / stddev("close_b").over(w60),
-            )
-            .withColumn("spread", col("close_a") - col("hedge_ratio") * col("close_b"))
-            .withColumn("spread_mean", avg("spread").over(w30))
-            .withColumn("spread_vol", stddev("spread").over(w30))
-            .withColumn("zscore", (col("spread") - col("spread_mean")) / col("spread_vol"))
-            .withColumn("correlation_60d", corr("ret_a", "ret_b").over(w60))
-            .withColumn("symbol_a", lit(sym_a))
-            .withColumn("symbol_b", lit(sym_b))
-            # ts is Unix nanoseconds; divide by 1e9 to get seconds before casting
-            .withColumn("event_timestamp", from_unixtime(col("ts").cast("double") / 1e9).cast("timestamp"))
-            .withColumn("created", current_timestamp())
+                / col("_std_b")
+            ),
         )
-        rows.append(pair_feat)
+        .drop("_std_b")
+        .withColumn("spread", col("close_a") - col("hedge_ratio") * col("close_b"))
+        .withColumn("spread_mean", avg("spread").over(w30))
+        .withColumn("_spread_vol", stddev("spread").over(w30))
+        .withColumn("zscore",
+            when(col("_spread_vol") != 0,
+                (col("spread") - col("spread_mean")) / col("_spread_vol")
+            )  # null when spread is constant — signals no information
+        )
+        .drop("_spread_vol")
+        .withColumn("correlation_60d", corr("ret_a", "ret_b").over(w60))
+        .withColumn("symbol_a", lit(sym_a))
+        .withColumn("symbol_b", lit(sym_b))
+        # ts is Unix nanoseconds; divide by 1e9 to get seconds before casting
+        .withColumn("event_timestamp", from_unixtime(col("ts").cast("double") / 1e9).cast("timestamp"))
+        .withColumn("created", current_timestamp())
+    )
+
+
+def build_feat_pair(spark: SparkSession, pairs: list[tuple[str, str]]) -> None:
+    """Compute pair features for the configured cointegrated pairs and write them to Delta."""
+    fact = spark.read.format("delta").load("s3a://delta-lake/gold/fact_daily_bar/")
+    rows = [pair_features(fact, sym_a, sym_b) for sym_a, sym_b in pairs]
 
     if rows:
         from functools import reduce
+
         from pyspark.sql import DataFrame
         all_pairs = reduce(DataFrame.union, rows)
         all_pairs.write.format("delta").mode("overwrite").save(
@@ -150,13 +159,8 @@ def build_feat_pair(spark: SparkSession, pairs: list[tuple[str, str]]) -> None:
 
 # ─── OBT ─────────────────────────────────────────────────────────────────────
 
-def build_obt(spark: SparkSession) -> None:
-    """Join feat_pair + close prices into OBT for backtester consumption."""
-    pair = spark.read.format("delta").load("s3a://delta-lake/gold/feat_pair_daily/")
-    fact = spark.read.format("delta").load("s3a://delta-lake/gold/fact_daily_bar/")
-
-    # Pull close price for each leg — that's all the backtester needs from OHLCV
-    # feat_pair_daily already has close_a/close_b; add open/high/low/volume for each leg
+def obt_from(pair, fact):
+    """Join pair features with each leg's OHLCV into one row per (pair, ts)."""
     ohlcv_a = fact.select(
         col("symbol").alias("symbol_a"), col("ts"),
         col("open").alias("open_a"), col("high").alias("high_a"),
@@ -167,13 +171,19 @@ def build_obt(spark: SparkSession) -> None:
         col("open").alias("open_b"), col("high").alias("high_b"),
         col("low").alias("low_b"), col("volume").alias("volume_b"),
     )
-
-    obt = (
+    return (
         pair
         .join(ohlcv_a, ["ts", "symbol_a"])
         .join(ohlcv_b, ["ts", "symbol_b"])
         .drop("spread_mean", "spread")
     )
+
+
+def build_obt(spark: SparkSession) -> None:
+    """Build obt_pair_backtest_input from pair features and fact_daily_bar."""
+    pair = spark.read.format("delta").load("s3a://delta-lake/gold/feat_pair_daily/")
+    fact = spark.read.format("delta").load("s3a://delta-lake/gold/fact_daily_bar/")
+    obt = obt_from(pair, fact)
     obt.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(
         "s3a://delta-lake/gold/obt_pair_backtest_input/"
     )

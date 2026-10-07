@@ -277,6 +277,63 @@ class TestMlflowModel:
         assert TestClient(build_default_app()).get("/readyz").status_code == 503
 
 
+class TestPackagedModel:
+    """CI exports the production model to a file and bakes it into the image."""
+
+    @pytest.fixture
+    def packaged(self, registry_uri, tmp_path):
+        from services.signal_api.package_model import export_model
+
+        return export_model(registry_uri, tmp_path / "model")
+
+    def test_export_keeps_registry_version_and_predictions(self, packaged, registry_uri):
+        path, version = packaged
+        assert version == "meta_label-v1"
+        exported = JoblibModel(path, version)
+        served = MlflowModel(registry_uri, "meta_label")
+        for z in (-3.0, 0.0, 3.0):
+            row = {**FEATURES, "zscore": z}
+            assert exported.predict_proba(row) == served.predict_proba(row)
+
+    def test_cli_prints_the_version_last(self, registry_uri, tmp_path, capsys):
+        from services.signal_api.package_model import main
+
+        main(["--tracking-uri", registry_uri, "--out", str(tmp_path / "m")])
+        assert capsys.readouterr().out.strip().splitlines()[-1] == "MODEL_VERSION=meta_label-v1"
+
+    # Partitions of MODEL_SOURCE: registry, file (with / without MODEL_VERSION), invalid.
+    @pytest.mark.parametrize(
+        ("version_env", "expected_prefix"), [("meta_label-v1", "meta_label-v1"), (None, "file-")]
+    )
+    def test_file_source_wins_over_a_configured_registry(
+        self, monkeypatch, packaged, registry_uri, version_env, expected_prefix
+    ):
+        from services.signal_api.app import _load_model
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", registry_uri)
+        monkeypatch.setenv("MODEL_SOURCE", "file")
+        monkeypatch.setenv("MODEL_PATH", str(packaged[0]))
+        if version_env:
+            monkeypatch.setenv("MODEL_VERSION", version_env)
+        else:
+            monkeypatch.delenv("MODEL_VERSION", raising=False)
+        assert _load_model().version.startswith(expected_prefix)
+
+    def test_registry_source_is_explicit_too(self, monkeypatch, registry_uri):
+        from services.signal_api.app import _load_model
+
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", registry_uri)
+        monkeypatch.setenv("MODEL_SOURCE", "registry")
+        assert _load_model().version == "meta_label-v1"
+
+    def test_unknown_source_is_rejected(self, monkeypatch):
+        from services.signal_api.app import _load_model
+
+        monkeypatch.setenv("MODEL_SOURCE", "s3")
+        with pytest.raises(ValueError, match="MODEL_SOURCE"):
+            _load_model()
+
+
 class TestDefaultApp:
     @pytest.fixture(autouse=True)
     def _no_registry(self, monkeypatch):

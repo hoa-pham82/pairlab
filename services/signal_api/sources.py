@@ -51,16 +51,21 @@ class _ClassifierModel:
     version: str
     _model: object
 
+    @property
+    def estimator(self) -> object:
+        """The underlying fitted classifier."""
+        return self._model
+
     def predict_proba(self, features: dict[str, float]) -> float:
         return score_features(self._model, features)
 
 
 class JoblibModel(_ClassifierModel):
-    """A classifier loaded from a joblib file; versioned by file content."""
+    """A classifier loaded from a joblib file; versioned by file content unless told otherwise."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, version: str | None = None) -> None:
         data = Path(path).read_bytes()
-        self.version = f"file-{hashlib.sha256(data).hexdigest()[:12]}"
+        self.version = version or f"file-{hashlib.sha256(data).hexdigest()[:12]}"
         self._model = joblib.load(path)
 
 

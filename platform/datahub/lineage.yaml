@@ -1,0 +1,160 @@
+# Lineage spec: which Airflow task reads and writes which table.
+# Source of truth for platform/datahub/emit_lineage.py; tests/unit/test_lineage_spec.py
+# checks it against the DAG and Spark job sources.
+
+env: PROD
+orchestrator: airflow
+
+datasets:
+  vendor_daily_bars:
+    platform: s3
+    name: vendor-raw/daily_bars
+    description: Raw daily bars from the vendor, Parquet, schema versions 1-3.
+  vendor_symbol_master:
+    platform: s3
+    name: vendor-raw/symbol_master.parquet
+    description: Symbol master from the vendor (name, sector, listing dates).
+
+  bronze_daily_bars:
+    platform: delta-lake
+    name: delta-lake/bronze/daily_bars
+    description: Bronze daily bars, schema-normalized, partitioned by dt.
+  bronze_rejected_daily_bars:
+    platform: delta-lake
+    name: delta-lake/bronze/rejected_daily_bars
+    description: Quarantine for rows that break the bar contract.
+  silver_daily_bars:
+    platform: delta-lake
+    name: delta-lake/silver/daily_bars
+    description: Silver daily bars, deduplicated on (symbol, ts).
+  gold_dim_symbol:
+    platform: delta-lake
+    name: delta-lake/gold/dim_symbol
+    description: Symbol dimension with SCD2 history.
+  gold_fact_daily_bar:
+    platform: delta-lake
+    name: delta-lake/gold/fact_daily_bar
+    description: Daily bar fact table with returns.
+  gold_feat_symbol_daily:
+    platform: delta-lake
+    name: delta-lake/gold/feat_symbol_daily
+    description: Per-symbol daily features (volatility, returns, ATR).
+  gold_feat_pair_daily:
+    platform: delta-lake
+    name: delta-lake/gold/feat_pair_daily
+    description: Per-pair daily features (hedge ratio, z-score, spread vol).
+  gold_obt_pair_backtest_input:
+    platform: delta-lake
+    name: delta-lake/gold/obt_pair_backtest_input
+    description: One Big Table the backtest engine reads.
+
+  pg_job_status:
+    platform: postgres
+    name: pairlab.platform.job_status
+    description: One row per Spark job run (rows written, status).
+  pg_stg_daily_bars:
+    platform: postgres
+    name: pairlab.silver.stg_daily_bars
+    description: Warehouse copy of silver daily bars.
+  pg_dim_symbol:
+    platform: postgres
+    name: pairlab.gold.dim_symbol
+    description: Warehouse copy of dim_symbol.
+  pg_fact_daily_bar:
+    platform: postgres
+    name: pairlab.gold.fact_daily_bar
+    description: Warehouse copy of fact_daily_bar.
+  pg_feat_symbol_daily:
+    platform: postgres
+    name: pairlab.gold.feat_symbol_daily
+    description: Warehouse copy of per-symbol features; Feast offline source.
+  pg_feat_pair_daily:
+    platform: postgres
+    name: pairlab.gold.feat_pair_daily
+    description: Warehouse copy of per-pair features; Feast offline source.
+  pg_obt_pair_backtest_input:
+    platform: postgres
+    name: pairlab.gold.obt_pair_backtest_input
+    description: Warehouse copy of the backtest input table.
+
+  online_symbol_daily_fv:
+    platform: feast
+    name: pairlab.symbol_daily_fv
+    description: Feast feature view symbol_daily_fv in the Redis online store.
+  online_pair_daily_fv:
+    platform: feast
+    name: pairlab.pair_daily_fv
+    description: Feast feature view pair_daily_fv in the Redis online store.
+
+pipelines:
+  dp1_ingest_bronze:
+    description: Ingest vendor-raw S3 Parquet into Delta Lake bronze.
+    source_file: platform/airflow/dags/dp1_dag.py
+    tasks:
+      ingest:
+        description: Spark job dp1_ingest_bronze_optimized.py.
+        inputs: [vendor_daily_bars]
+        outputs: [bronze_daily_bars, bronze_rejected_daily_bars, pg_job_status]
+      validate:
+        description: Checks the latest run wrote rows and ended ok.
+        upstream: [ingest]
+        inputs: [pg_job_status]
+
+  dp2_silver_gold:
+    description: Delta bronze to silver (dedup) to gold (SCD2 dim + fact).
+    source_file: platform/airflow/dags/dp2_dag.py
+    tasks:
+      wait_dp1:
+        description: Waits for a successful DP1 run in the last day.
+        inputs: [pg_job_status]
+      ingest:
+        description: Spark job dp2_silver_gold.py.
+        upstream: [wait_dp1]
+        inputs: [bronze_daily_bars, vendor_symbol_master]
+        outputs:
+          - silver_daily_bars
+          - gold_dim_symbol
+          - gold_fact_daily_bar
+          - pg_stg_daily_bars
+          - pg_dim_symbol
+          - pg_fact_daily_bar
+      validate:
+        description: Checks silver has no duplicates, SCD2 integrity, fact has no null returns.
+        upstream: [ingest]
+        inputs: [pg_stg_daily_bars, pg_dim_symbol, pg_fact_daily_bar]
+
+  dp3_features:
+    description: Compute feature tables and the backtest input table from gold.
+    source_file: platform/airflow/dags/dp3_dag.py
+    tasks:
+      wait_dp2:
+        description: Waits for DP2 to populate gold.fact_daily_bar.
+        inputs: [pg_fact_daily_bar]
+      ingest:
+        description: Spark job dp3_features.py.
+        upstream: [wait_dp2]
+        inputs: [gold_fact_daily_bar]
+        outputs:
+          - gold_feat_symbol_daily
+          - gold_feat_pair_daily
+          - gold_obt_pair_backtest_input
+          - pg_feat_symbol_daily
+          - pg_feat_pair_daily
+          - pg_obt_pair_backtest_input
+      validate:
+        description: Checks event_timestamp is never null, z-scores exist, OBT is populated.
+        upstream: [ingest]
+        inputs: [pg_feat_symbol_daily, pg_feat_pair_daily, pg_obt_pair_backtest_input]
+
+  feast_materialize:
+    description: Push gold features from Postgres into the Redis online store.
+    source_file: platform/airflow/dags/feast_materialize_dag.py
+    tasks:
+      wait_dp3:
+        description: Waits for DP3 to populate gold.feat_pair_daily.
+        inputs: [pg_feat_pair_daily]
+      materialize:
+        description: feast materialize-incremental.
+        upstream: [wait_dp3]
+        inputs: [pg_feat_symbol_daily, pg_feat_pair_daily]
+        outputs: [online_symbol_daily_fv, online_pair_daily_fv]

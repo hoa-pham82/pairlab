@@ -9,6 +9,7 @@ import httpx
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from services.agent.ab import CHAMPION, assign_llm_variant
 from services.agent.agent import AgentAnswer, ToolAgent, ToolSpec, agent_as_tool
 from services.agent.analysts import BRIEF_PROMPTS, DEFAULT_PROMPTS, PROMPT_SETS, build_agents
 from services.agent.llm import ChatResult, OpenAICompatClient
@@ -276,10 +277,10 @@ class TestToolAgent:
         assert _metric(telemetry, "agent_calls_total", agent="analyst") == 1
         assert _metric(telemetry, "agent_tool_calls_total", tool="check_regime") == 1
         assert _metric(telemetry, "agent_tool_failures_total", tool="check_regime") == 0
-        assert _metric(telemetry, "llm_tokens_total", model="fake", kind="input") == 30
-        assert _metric(telemetry, "llm_tokens_total", model="fake", kind="output") == 12
-        assert _metric(telemetry, "llm_round_trip_seconds_count", model="fake") == 2
-        assert _metric(telemetry, "llm_time_to_first_token_seconds_count", model="fake") == 1
+        assert _metric(telemetry, "llm_tokens_total", model="fake", kind="input", variant="champion") == 30
+        assert _metric(telemetry, "llm_tokens_total", model="fake", kind="output", variant="champion") == 12
+        assert _metric(telemetry, "llm_round_trip_seconds_count", model="fake", variant="champion") == 2
+        assert _metric(telemetry, "llm_time_to_first_token_seconds_count", model="fake", variant="champion") == 1
 
 
 class TestPiiGuard:
@@ -395,3 +396,57 @@ class TestIdempotency:
         answers = [one_run() for _ in range(repeats)]
         assert all(answer == answers[0] for answer in answers)
         assert answers[0].tool_calls[0].arguments == {"pair_id": pair}
+
+
+# ── A/B variant routing ───────────────────────────────────────────────────────
+
+
+class TestAssignLlmVariant:
+    # Equivalence partitions: always champion when share=0, always challenger
+    # when share=1, and stable (same result on repeated calls) in between.
+    def test_share_zero_always_champion(self):
+        for q in ("Is KO__PEP ok?", "check XOM__CVX", "tell me about GS__MS"):
+            assert assign_llm_variant(q, 0.0) == CHAMPION
+
+    def test_share_one_always_challenger(self):
+        for q in ("Is KO__PEP ok?", "check XOM__CVX", "tell me about GS__MS"):
+            assert assign_llm_variant(q, 1.0) == "challenger"
+
+    def test_same_question_gives_same_variant(self):
+        q = "Is KO__PEP still tradeable?"
+        first = assign_llm_variant(q, 0.5)
+        assert all(assign_llm_variant(q, 0.5) == first for _ in range(20))
+
+    def test_50_percent_split_is_roughly_even(self):
+        # Property: with 1000 distinct questions and share=0.5, between 40% and 60%
+        # should land in each bucket (exact rate depends on SHA-256 distribution).
+        questions = [f"Is PAIR{i}__PAIR{i + 1} ok?" for i in range(1000)]
+        challengers = sum(1 for q in questions if assign_llm_variant(q, 0.5) == "challenger")
+        assert 400 <= challengers <= 600
+
+
+class TestAgentVariantTelemetry:
+    """Variant label flows all the way from run() to Prometheus counters."""
+
+    def test_champion_variant_labels_telemetry(self):
+        telemetry = AgentTelemetry()
+        llm = ScriptedLLM(_says("ok"))
+        run(_agent(llm, telemetry=telemetry).run("q", variant="champion"))
+        assert _metric(telemetry, "llm_tokens_total", model="fake", kind="input", variant="champion") > 0
+        assert _metric(telemetry, "llm_tokens_total", model="fake", kind="input", variant="challenger") == 0
+
+    def test_challenger_variant_labels_telemetry(self):
+        telemetry = AgentTelemetry()
+        llm = ScriptedLLM(_says("ok"))
+        run(_agent(llm, telemetry=telemetry).run("q", variant="challenger"))
+        assert _metric(telemetry, "llm_tokens_total", model="fake", kind="input", variant="challenger") > 0
+        assert _metric(telemetry, "llm_tokens_total", model="fake", kind="input", variant="champion") == 0
+
+    def test_variant_flows_to_answer(self):
+        llm = ScriptedLLM(_says("ok"))
+        answer = run(_agent(llm).run("q", variant="challenger"))
+        assert answer.variant == "challenger"
+
+    def test_pii_block_preserves_variant(self):
+        answer = run(_agent(ScriptedLLM()).run("email me at x@example.com", variant="challenger"))
+        assert answer.blocked and answer.variant == "challenger"

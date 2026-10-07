@@ -1,6 +1,7 @@
 """Training pipeline: version data, split, train, evaluate, register in MLflow.
 
 Usage:
+    set -a; . ./.env; set +a      # object-store credentials
     uv run python -m ml.pipeline
 """
 
@@ -119,6 +120,14 @@ def _production_auc(client: MlflowClient, name: str) -> float | None:
     return client.get_run(current.run_id).data.metrics.get("auc")
 
 
+def _env(*names: str) -> str:
+    """Return the first of the named environment variables that is set."""
+    for name in names:
+        if os.environ.get(name):
+            return os.environ[name]
+    raise SystemExit(f"set one of {', '.join(names)} (see .env.example)")
+
+
 def load_frame_from_warehouse(dsn: str, feature_repo: str) -> pd.DataFrame:
     """Read the label table and join pair features through Feast."""
     import psycopg2
@@ -150,8 +159,8 @@ if __name__ == "__main__":
 
     s3_options = {
         "AWS_ENDPOINT_URL": os.environ.get("S3_ENDPOINT", "http://localhost:4566"),
-        "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "test"),
-        "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
+        "AWS_ACCESS_KEY_ID": _env("AWS_ACCESS_KEY_ID", "MINIO_ROOT_USER"),
+        "AWS_SECRET_ACCESS_KEY": _env("AWS_SECRET_ACCESS_KEY", "MINIO_ROOT_PASSWORD"),
         "AWS_REGION": "us-east-1",
         "AWS_ALLOW_HTTP": "true",
         "AWS_S3_ALLOW_UNSAFE_RENAME": "true",

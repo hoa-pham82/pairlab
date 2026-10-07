@@ -1,0 +1,14 @@
+image: {repository: pairlab-signal_api, tag: v1}
+containerPort: 8000
+service: {type: NodePort, port: 8000, nodePort: 30080}
+env:
+  FEAST_REPO: /app/platform/feature_repo
+  FEAST_FS_YAML_FILE_PATH: /app/platform/feature_repo/feature_store.docker.yaml
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  MLFLOW_ENABLE_PROXY_MULTIPART_DOWNLOAD: "false"
+probes: {initialDelaySeconds: 20, periodSeconds: 5, failureThreshold: 12}
+resources:
+  requests: {cpu: 200m, memory: 500Mi}
+  limits: {cpu: "1", memory: 1200Mi}
+autoscaling:
+  query: sum(rate(signal_api_requests_total{route="/signal"}[1m]))

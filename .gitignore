@@ -16,3 +16,11 @@ mutants/
 *.jsonl
 platform/flink/jars/*.jar
 platform/spark/jars/*.jar
+deploy/kind/kubeconfig
+deploy/ansible/inventory.ini
+deploy/terraform/terraform.tfvars
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.backup
+data/
+build/

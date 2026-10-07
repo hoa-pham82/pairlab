@@ -1,0 +1,8 @@
+image: {repository: pairlab-regime_api, tag: v1}
+containerPort: 8001
+service: {type: NodePort, port: 8001, nodePort: 30081}
+env: {}
+secretEnv:
+  POSTGRES_URL: postgresql://pairlab:pairlab@postgres:5432/pairlab
+autoscaling:
+  query: sum(rate(regime_api_requests_total{route="/regime"}[1m]))
