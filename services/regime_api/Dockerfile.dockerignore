@@ -1,0 +1,9 @@
+*
+!pyproject.toml
+!uv.lock
+!src
+!ml
+!services
+!platform/feature_repo
+**/__pycache__
+**/*.pyc

@@ -1,0 +1,21 @@
+{
+  "name": "gold_obt_backtest",
+  "generated": "2026-10-07T17:41:58.114283",
+  "metrics": {
+    "total_return": -0.07476993500441335,
+    "annualised_return": -0.018601084029416293,
+    "annualised_vol": 0.03910782378060864,
+    "sharpe": -0.4756358761808556,
+    "sortino": -0.2829283180810003,
+    "max_drawdown": 0.10431598964656477,
+    "max_drawdown_duration_days": 948,
+    "calmar": -0.17831479231936564,
+    "profit_factor": 0.2718705009444264,
+    "hit_rate": 0.28370786516853935,
+    "avg_holding_bars": 92.9494382022472,
+    "turnover_annual": 9.749628621459774,
+    "exposure": 0.34132310642377756,
+    "total_pnl": -74769.93500441336,
+    "n_trades": 356
+  }
+}

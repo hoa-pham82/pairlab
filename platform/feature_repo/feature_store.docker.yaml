@@ -1,0 +1,19 @@
+project: pairlab
+registry: data/registry.db
+provider: local
+
+offline_store:
+  type: postgres
+  host: postgres
+  port: 5432
+  database: pairlab
+  db_schema: feast
+  user: pairlab
+  password: pairlab
+  sslmode: disable
+
+online_store:
+  type: redis
+  connection_string: "redis:6379"
+
+entity_key_serialization_version: 3

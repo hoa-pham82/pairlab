@@ -1,0 +1,20 @@
+seed: 99
+n_symbols: 10
+n_cointegrated_pairs: 2
+start: "2021-01-04"
+days: 504
+ou_theta: 0.07
+ou_sigma: 0.015
+gbm_drift: 0.00005
+gbm_vol: 0.012
+delist_rate: 0.0
+skew_zipf_exponent: 1.2
+duplicate_rate: 0.02
+schema_evolution: false
+burst_probability: 0.0
+late_arrival_probability: 0.0
+streaming_duplicate_rate: 0.0
+
+# Regime shift: break cointegration for all pairs after this date
+regime_shift_date: "2022-01-03"
+regime_shift_multiplier: 5.0   # inflate OU sigma → spread explodes

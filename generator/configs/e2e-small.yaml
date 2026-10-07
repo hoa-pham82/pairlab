@@ -1,0 +1,16 @@
+seed: 7
+n_symbols: 6
+n_cointegrated_pairs: 2
+start: "2022-01-03"
+days: 252
+ou_theta: 0.10
+ou_sigma: 0.018
+gbm_drift: 0.0001
+gbm_vol: 0.010
+delist_rate: 0.0
+skew_zipf_exponent: 1.0
+duplicate_rate: 0.0
+schema_evolution: false
+burst_probability: 0.0
+late_arrival_probability: 0.0
+streaming_duplicate_rate: 0.0

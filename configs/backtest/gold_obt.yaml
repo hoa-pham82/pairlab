@@ -1,0 +1,32 @@
+name: gold_obt_backtest
+
+# Data loaded from Postgres gold.obt_pair_backtest_input via load_postgres()
+# Run with:
+#   uv run python scripts/backtest_from_gold.py
+data_path: data/gold_obt.parquet   # populated by scripts/backtest_from_gold.py
+start_date: "2018-01-01"
+end_date:   "2021-12-31"
+
+symbols: [KO, PEP, XOM, CVX, JPM, BAC, GS, MS]
+
+strategy:
+  formation_window: 252
+  zscore_window:    30
+  entry_z:          2.0
+  exit_z:           0.5
+  stop_z:           4.0
+  coint_pvalue_entry: 0.05
+  coint_pvalue_drop:  0.10
+
+portfolio:
+  initial_cash:             1_000_000
+  gross_notional_per_pair:    100_000
+  max_gross_leverage:             4.0
+
+costs:
+  commission_bps:       5
+  half_spread_bps:      2
+  borrow_cost_bps_yr:  50
+
+output_dir: results
+seed: 42

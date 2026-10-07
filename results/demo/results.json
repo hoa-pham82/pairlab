@@ -1,0 +1,21 @@
+{
+  "name": "demo_e2e",
+  "generated": "2026-10-05T04:18:56.329418",
+  "metrics": {
+    "total_return": 0.9354844853443262,
+    "annualised_return": 0.9405832694378378,
+    "annualised_vol": 2.590456841821545,
+    "sharpe": 0.3630955182316193,
+    "sortino": 1.300029550327223,
+    "max_drawdown": 0.5145925384360315,
+    "max_drawdown_duration_days": 167,
+    "calmar": 1.8278214299346294,
+    "profit_factor": 2.9717645912805195,
+    "hit_rate": 0.3783783783783784,
+    "avg_holding_bars": 23.18918918918919,
+    "turnover_annual": 708.8640206474871,
+    "exposure": 1.0318725099601593,
+    "total_pnl": 467742.24267216306,
+    "n_trades": 259
+  }
+}

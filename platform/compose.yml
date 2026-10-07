@@ -1,0 +1,480 @@
+# pairlab platform stack
+# Usage:
+#   core only:      docker compose -f platform/compose.yml --profile core up -d
+#   + streaming:    docker compose -f platform/compose.yml --profile core --profile stream up -d
+#   + platform:     docker compose -f platform/compose.yml --profile core --profile stream --profile platform up -d
+#   + ml:           add --profile ml         (MLflow)
+#   + obs:          add --profile obs        (Prometheus, Grafana, cAdvisor, Pushgateway)
+#   + llm:          add --profile llm        (llama.cpp — requires models/ dir, see scripts/download_model.sh)
+#   all:            docker compose -f platform/compose.yml --profile core --profile stream --profile platform --profile ml --profile obs --profile llm up -d
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  # ──────────────────────────────────────────────────────────
+  # CORE profile: PostgreSQL · MinIO · Redis
+  # ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: [core]
+    environment:
+      POSTGRES_USER: pairlab
+      POSTGRES_PASSWORD: pairlab
+      POSTGRES_DB: pairlab
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./warehouse/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pairlab -d pairlab"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  # LocalStack provides S3-compatible storage (same API as MinIO).
+  # Use: AWS_ACCESS_KEY_ID=test, AWS_SECRET_ACCESS_KEY=test,
+  #      endpoint_url=http://localstack:4566
+  minio:
+    image: localstack/localstack:3.0
+    profiles: [core]
+    environment:
+      SERVICES: s3
+      AWS_DEFAULT_REGION: us-east-1
+      LOCALSTACK_AUTH_TOKEN: ""
+    ports:
+      - "4566:4566"   # unified S3 endpoint (maps to 9000 in env vars)
+    volumes:
+      - minio_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging: *default-logging
+
+  minio-init:
+    image: amazon/aws-cli:latest
+    profiles: [core]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: >
+      /bin/sh -c "
+        aws --endpoint-url http://minio:4566 s3 mb s3://vendor-raw      2>/dev/null || true &&
+        aws --endpoint-url http://minio:4566 s3 mb s3://delta-lake       2>/dev/null || true &&
+        aws --endpoint-url http://minio:4566 s3 mb s3://mlflow-artifacts 2>/dev/null || true &&
+        echo 'S3 buckets ready'
+      "
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    profiles: [core]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────────────────
+  # STREAM profile: Redpanda · Flink
+  # ──────────────────────────────────────────────────────────
+
+  redpanda:
+    image: redpandadata/redpanda:v24.1.1
+    profiles: [stream]
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --mode dev-container
+      - --smp 1
+      - --memory 512M
+      - --default-log-level=warn
+    ports:
+      - "18081:18081"  # schema registry
+      - "18082:18082"  # pandaproxy
+      - "19092:19092"  # kafka external
+      - "9644:9644"    # admin
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    logging: *default-logging
+
+  redpanda-console:
+    image: redpandadata/console:v2.5.2
+    profiles: [stream]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      CONFIG_FILEPATH: /etc/redpanda-console/config.yaml
+    volumes:
+      - ./docker/redpanda-console-config.yaml:/etc/redpanda-console/config.yaml:ro
+    ports:
+      - "8080:8080"
+    logging: *default-logging
+
+  redpanda-init:
+    image: redpandadata/redpanda:v24.1.1
+    profiles: [stream]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: >
+      /bin/bash -c "
+        rpk --brokers redpanda:9092 topic create ticks.raw --partitions 4 --replicas 1 2>/dev/null || true &&
+        rpk --brokers redpanda:9092 topic create bars.1m   --partitions 4 --replicas 1 2>/dev/null || true &&
+        echo 'Redpanda topics ready'
+      "
+    logging: *default-logging
+
+  flink-jobmanager:
+    image: flink:1.19-scala_2.12
+    profiles: [stream]
+    # copy connector JARs from the mounted staging dir into /opt/flink/lib/ at startup
+    entrypoint: >
+      sh -c "cp /opt/flink/extra-jars/*.jar /opt/flink/lib/ 2>/dev/null || true; exec /docker-entrypoint.sh jobmanager"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 2
+        state.backend: hashmap
+        execution.checkpointing.interval: 30s
+    ports:
+      - "8081:8081"   # Flink Web UI
+    volumes:
+      - flink_checkpoints:/tmp/flink-checkpoints
+      # connector JARs — run platform/flink/download_jars.sh first
+      - ./flink/jars:/opt/flink/extra-jars:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/overview"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    logging: *default-logging
+
+  flink-taskmanager:
+    image: flink:1.19-scala_2.12
+    profiles: [stream]
+    entrypoint: >
+      sh -c "cp /opt/flink/extra-jars/*.jar /opt/flink/lib/ 2>/dev/null || true; exec /docker-entrypoint.sh taskmanager"
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+    volumes:
+      - ./flink/jars:/opt/flink/extra-jars:ro
+    scale: 1
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────────────────
+  # PLATFORM profile: Spark · Airflow
+  # ──────────────────────────────────────────────────────────
+
+  spark-master:
+    image: apache/spark:3.5.3
+    profiles: [platform]
+    user: root
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    environment:
+      SPARK_MASTER_WEBUI_PORT: "8082"
+      SPARK_MASTER_PORT: "7077"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "8082:8082"   # Spark Master Web UI
+      - "7077:7077"   # Spark Master RPC
+    volumes:
+      - ./spark/jars:/opt/spark/extra-jars:ro
+      - ./spark/jobs:/opt/spark/jobs:ro
+      - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+      - spark_warehouse:/opt/spark/warehouse
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  spark-worker:
+    image: apache/spark:3.5.3
+    profiles: [platform]
+    user: root
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment:
+      SPARK_WORKER_MEMORY: 2g
+      SPARK_WORKER_CORES: "2"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./spark/jars:/opt/spark/extra-jars:ro
+      - ./spark/jobs:/opt/spark/jobs:ro
+      - ./spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
+    logging: *default-logging
+
+  airflow:
+    build:
+      context: ./docker
+      dockerfile: airflow.Dockerfile
+    profiles: [platform]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # AIRFLOW__CORE__FERNET_KEY comes from the git-ignored repo-root .env
+    env_file: ../.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://pairlab:pairlab@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "pairlab-dev-secret"
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
+      # Connection strings (accessible as AIRFLOW_CONN_* or via UI)
+      AIRFLOW_CONN_POSTGRES_DWH: "postgresql://pairlab:pairlab@postgres:5432/pairlab"
+      AIRFLOW_CONN_SPARK_DEFAULT: "spark://spark-master:7077"
+      AIRFLOW_CONN_MINIO_S3: "s3://test:test@minio:4566"
+      # Variables
+      AIRFLOW_VAR_MINIO_ENDPOINT: "http://minio:4566"
+      AIRFLOW_VAR_MINIO_ACCESS_KEY: "test"
+      AIRFLOW_VAR_MINIO_SECRET_KEY: "test"
+      AIRFLOW_VAR_SPARK_MASTER: "spark://spark-master:7077"
+      AIRFLOW_VAR_S3_ENDPOINT: "http://minio:4566"
+      AIRFLOW_VAR_PG_JDBC_URL: "jdbc:postgresql://postgres:5432/pairlab"
+      AIRFLOW_VAR_COINT_PAIRS: "KO:PEP,XOM:CVX,JPM:BAC,GS:MS"
+      # ML venv env vars (used by ml_train_dag and ml_drift_dag)
+      MLFLOW_TRACKING_URI: "http://mlflow:5000"
+      MLFLOW_ENABLE_PROXY_MULTIPART_DOWNLOAD: "false"
+      POSTGRES_URL: "postgresql://pairlab:pairlab@postgres:5432/pairlab"
+      S3_ENDPOINT: "http://minio:4566"
+      # Use the Docker variant of feature_store.yaml (postgres/redis service names)
+      FEAST_FS_YAML_FILE_PATH: "/opt/airflow/feature_repo/feature_store.docker.yaml"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./spark/jobs:/opt/airflow/spark_jobs:ro
+      - ./feature_repo:/opt/airflow/feature_repo:ro
+      - ../ml:/opt/airflow/ml:ro
+      - airflow_logs:/opt/airflow/logs
+      # docker.sock lets BashOperators run `docker exec spark-master spark-submit ...`
+      # LOCAL DEMO ONLY — gives Airflow full control of the Docker daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8083:8080"   # Airflow Web UI
+    command: >
+      bash -c "
+        airflow db migrate &&
+        airflow users create --username admin --password admin --firstname Hoa --lastname Pham --role Admin --email phamtthanhhoa@gmail.com &&
+        { airflow scheduler & exec airflow webserver; }
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────────────────
+  # ML profile: MLflow · signal_api · regime_api
+  # ──────────────────────────────────────────────────────────
+
+  mlflow:
+    build:
+      context: ./docker
+      dockerfile: mlflow.Dockerfile
+    profiles: [ml]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    command: >
+      server
+        --backend-store-uri postgresql+psycopg2://pairlab:pairlab@postgres:5432/mlflow
+        --artifacts-destination s3://mlflow-artifacts
+        --serve-artifacts
+        --host 0.0.0.0
+        --port 5000
+        --allowed-hosts mlflow,mlflow:5000,localhost,localhost:5001,localhost:5000,127.0.0.1,127.0.0.1:5001
+    ports:
+      - "5001:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging: *default-logging
+
+  signal_api:
+    build:
+      context: ..
+      dockerfile: services/signal_api/Dockerfile
+    profiles: [ml]
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    environment:
+      FEAST_REPO: /app/platform/feature_repo
+      FEAST_FS_YAML_FILE_PATH: /app/platform/feature_repo/feature_store.docker.yaml
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_ENABLE_PROXY_MULTIPART_DOWNLOAD: "false"
+      TAKE_THRESHOLD: "0.6"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  regime_api:
+    build:
+      context: ..
+      dockerfile: services/regime_api/Dockerfile
+    profiles: [ml]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_URL: postgresql://pairlab:pairlab@postgres:5432/pairlab
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────────────────
+  # OBS profile: Prometheus · Grafana
+  # ──────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    profiles: [obs]
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    profiles: [obs]
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana-datasources.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+    ports:
+      - "3000:3000"
+    logging: *default-logging
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    profiles: [obs]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "8084:8080"
+    logging: *default-logging
+
+  pushgateway:
+    image: prom/pushgateway:v1.8.0
+    profiles: [obs]
+    ports:
+      - "9091:9091"
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────────────────
+  # LLM profile: llama.cpp inference server
+  # ──────────────────────────────────────────────────────────
+  # Before starting: download model file to models/ (git-ignored)
+  # e.g. models/qwen2.5-3b-instruct-q4_k_m.gguf from Hugging Face
+  # Run:  bash scripts/download_model.sh
+
+  llama-cpp:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    profiles: [llm]
+    volumes:
+      - ../models:/models:ro
+    command: >
+      --model /models/qwen2.5-3b-instruct-q4_k_m.gguf
+      --host 0.0.0.0
+      --port 8080
+      --jinja
+      --metrics
+      -np 2
+      -c 4096
+      -t 4
+    ports:
+      - "8085:8080"
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  minio_data:
+  redis_data:
+  redpanda_data:
+  flink_checkpoints:
+  spark_warehouse:
+  airflow_logs:
+  grafana_data:
+  mlflow_data:
+
+networks:
+  default:
+    name: pairlab-network

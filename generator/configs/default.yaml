@@ -1,0 +1,29 @@
+seed: 42
+n_symbols: 20
+n_cointegrated_pairs: 4
+start: "2018-01-02"
+days: 2200            # ~8.7 years; ends ~2026-10-07 so Feast 3-day TTL stays valid
+# OU calibration: ou_sigma 0.005 + ou_theta 0.10 gives 76% one-year coint pass rate
+# (was 0.015 / 0.07 → 28% pass; spread vol swamped the regression)
+ou_theta: 0.10
+ou_sigma: 0.005
+gbm_drift: 0.00005
+gbm_vol: 0.012
+delist_rate: 0.03     # 3% of non-pair symbols delist per year
+
+# Sector change: CVX reclassified Energy → Energy-Alt on this date (exercises SCD2 MERGE)
+sector_change_date: "2022-06-01"
+sector_change_symbols: ["CVX"]
+sector_change_new_value: "Energy-Alt"
+
+# Data problems to inject
+skew_zipf_exponent: 1.2
+duplicate_rate: 0.02
+schema_evolution: true
+schema_change_date: "2020-06-01"   # v1→v2 (adds adj_close); v3 files (add source_exchange) start here too
+
+# Streaming
+burst_probability: 0.05
+late_arrival_probability: 0.03
+late_arrival_max_seconds: 30
+streaming_duplicate_rate: 0.015

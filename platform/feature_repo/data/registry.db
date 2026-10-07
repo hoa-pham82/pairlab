@@ -1,0 +1,122 @@
+
+n
+N
+symbol_pair)Cointegrated pair key: symbol_a__symbol_b"symbol_pairJpairlab
+§¸˜ÖÀ¹Òû«Ê˜Öà®è¢
+W
+7
+symbolTicker symbol (e.g. KO, PEP)"symbolJpairlab
+§¸˜Ö°€Ëû«Ê˜ÖĞÑì¢
+>
+
+__dummy"
+__dummy_idJpairlab
+§¸˜Öè‹Ïû«Ê˜Ö€¶ğ¢1"$d6c52283-9145-4215-b5dc-4f29bec26ea2*Êã˜Ö˜×˜¢2—
+¬
+symbol_daily_fvpairlabsymbol"
+vol_21d"
+vol_63d"
+ret_21d"
+ret_63d"
+atr_14d*
+ownerpairlab*
+layergold2€é:ˆevent_timestamp‚`
+^{"name": "symbol_daily_source", "query": "SELECT * FROM feast.feat_symbol_daily", "table": ""}ŠZfeast.infra.offline_stores.contrib.postgres_offline_store.postgres_source.PostgreSQLSource¢symbol_daily_source’«Ê˜ÖÀ¹üí"«Ê˜Ö íë¡@b
+
+symbol’latestf
+§¸˜Ö §¤ûÊã˜Ö¸¾½
+€ô¥Ò€¹
+€ô¥Ò€¹
+€ô¥Ò€¹
+€¹Åã˜Ö02É
+Ş
+pair_daily_fvpairlabsymbol_pair"
+hedge_ratio"
+
+zscore"
+
+spread_vol"
+correlation_60d*
+ownerpairlab*
+layergold2€é:±event_timestamp‚Š
+‡{"name": "pair_daily_source", "query": "SELECT *, symbol_a || '__' || symbol_b AS symbol_pair FROM feast.feat_pair_daily", "table": ""}ŠZfeast.infra.offline_stores.contrib.postgres_offline_store.postgres_source.PostgreSQLSource¢pair_daily_source’«Ê˜Öğ—‚î"«Ê˜Ö€ª÷¡@b
+symbol_pair’latestf
+§¸˜Öø˜»ûÊã˜Öàêû˜
+€ô¥Ò€¹
+€ô¥Ò€¹
+€ô¥Ò€¹
+€¹Åã˜Ö02ª
+ğ
+
+bars_1m_fvpairlabsymbol"
+open"
+high"
+low"	
+close"
+
+volume"
+
+tick_count*
+ownerpairlab*
+layersilver2Ø:Íevent_timestamp‚©
+¦{"name": "bars_1m_source", "query": "SELECT symbol, window_start AS event_timestamp, open, high, low, close, volume, tick_count FROM silver.stg_bars_1m", "table": ""}ŠZfeast.infra.offline_stores.contrib.postgres_offline_store.postgres_source.PostgreSQLSource¢bars_1m_source’«Ê˜ÖÀ˜‡î"«Ê˜ÖĞûá¡@b
+
+symbol’latest5
+«Ê˜Öğ¶¬¢Êã˜ÖØ¹¢
+òŞ˜Öèì³EÅã˜Ö0b»event_timestamp‚Š
+‡{"name": "pair_daily_source", "query": "SELECT *, symbol_a || '__' || symbol_b AS symbol_pair FROM feast.feat_pair_daily", "table": ""}ŠZfeast.infra.offline_stores.contrib.postgres_offline_store.postgres_source.PostgreSQLSource¢pair_daily_sourceªpairlab’§¸˜Ö°Í²ß"§¸˜ÖÈ¦’ûb’event_timestamp‚`
+^{"name": "symbol_daily_source", "query": "SELECT * FROM feast.feat_symbol_daily", "table": ""}ŠZfeast.infra.offline_stores.contrib.postgres_offline_store.postgres_source.PostgreSQLSource¢symbol_daily_sourceªpairlab’§¸˜Ö°ß¬ß"§¸˜ÖÀØûb×event_timestamp‚©
+¦{"name": "bars_1m_source", "query": "SELECT symbol, window_start AS event_timestamp, open, high, low, close, volume, tick_count FROM silver.stg_bars_1m", "table": ""}ŠZfeast.infra.offline_stores.contrib.postgres_offline_store.postgres_source.PostgreSQLSource¢bars_1m_sourceªpairlab’«Ê˜ÖÀ˜‡î"«Ê˜ÖĞûá¡Š)
+	
+pairlab
+§¸˜ÖØ’İß«Ê˜Ö˜ª½î’ş
+­
+symbol_daily_fvpairlab"feature_view*Î
+­
+symbol_daily_fvpairlabsymbol"
+vol_21d"
+vol_63d"
+ret_21d"
+ret_63d"
+atr_14d*
+layergold*
+ownerpairlab2€ÎÚ:ˆevent_timestamp‚`
+^{"name": "symbol_daily_source", "query": "SELECT * FROM feast.feat_symbol_daily", "table": ""}ŠZfeast.infra.offline_stores.contrib.postgres_offline_store.postgres_source.PostgreSQLSource¢symbol_daily_source’§¸˜Ö°ß¬ß"§¸˜ÖÀØû@b
+
+symbol’latest
+§¸˜Ö §¤û§¸˜Ö §¤û2§¸˜Öğ÷¸ûB$819dd109-b6af-4911-bbb9-c84d0e88258c
+İ
+pair_daily_fvpairlab"feature_view*€
+ß
+pair_daily_fvpairlabsymbol_pair"
+hedge_ratio"
+
+zscore"
+
+spread_vol"
+correlation_60d*
+layergold*
+ownerpairlab2€ÎÚ:±event_timestamp‚Š
+‡{"name": "pair_daily_source", "query": "SELECT *, symbol_a || '__' || symbol_b AS symbol_pair FROM feast.feat_pair_daily", "table": ""}ŠZfeast.infra.offline_stores.contrib.postgres_offline_store.postgres_source.PostgreSQLSource¢pair_daily_source’§¸˜Ö°Í²ß"§¸˜ÖÈ¦’û@b
+symbol_pair’latest
+§¸˜Öø˜»û§¸˜Öø˜»û2§¸˜ÖäÉûB$3a1a315f-603e-4fbe-9bd4-df4712593695
+ë
+
+bars_1m_fvpairlab"feature_view*‘
+ğ
+
+bars_1m_fvpairlabsymbol"
+open"
+high"
+low"	
+close"
+
+volume"
+
+tick_count*
+ownerpairlab*
+layersilver2Ø:Íevent_timestamp‚©
+¦{"name": "bars_1m_source", "query": "SELECT symbol, window_start AS event_timestamp, open, high, low, close, volume, tick_count FROM silver.stg_bars_1m", "table": ""}ŠZfeast.infra.offline_stores.contrib.postgres_offline_store.postgres_source.PostgreSQLSource¢bars_1m_source’«Ê˜ÖÀ˜‡î"«Ê˜ÖĞûá¡@b
+
+symbol’latest
+«Ê˜Öğ¶¬¢«Ê˜Öğ¶¬¢2«Ê˜Öˆü¼¢B$dc4fcf18-cdf8-4ff3-b04c-e46b40ec7180

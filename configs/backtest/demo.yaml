@@ -1,0 +1,17 @@
+name: demo_e2e
+data_path: data/generated/daily_bars.parquet
+symbol_master_path: data/generated/symbol_master.parquet
+start_date: "2022-01-03"
+end_date: "2022-12-30"
+output_dir: results/demo
+
+strategy:
+  formation_window: 60
+  zscore_window: 20
+  entry_z: 2.0
+  exit_z: 0.5
+  stop_z: 4.0
+
+portfolio:
+  initial_cash: 500000
+  gross_notional_per_pair: 50000
