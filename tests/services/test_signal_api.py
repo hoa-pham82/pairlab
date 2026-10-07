@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from ml.dataset import PAIR_FEATURES
+from services.ab import assign_variant
 from services.signal_api.app import build_default_app, create_app
 from services.signal_api.sources import FeastFeatureSource, JoblibModel, MlflowModel
 
@@ -127,7 +128,10 @@ class TestMetrics:
         text = signal_client.get("/metrics").text
         assert 'signal_api_requests_total{route="/signal",status="200"} 1.0' in text
         assert 'signal_api_requests_total{route="/signal",status="404"} 1.0' in text
-        assert 'signal_api_decisions_total{model_version="test-1",take_trade="true"} 1.0' in text
+        assert (
+            'signal_api_decisions_total{model_version="test-1",take_trade="true",'
+            'variant="champion"} 1.0'
+        ) in text
         assert "signal_api_request_seconds_bucket" in text
 
     def test_unknown_route_is_counted_as_unmatched(self, signal_client):
@@ -289,5 +293,98 @@ class TestDefaultApp:
         monkeypatch.setenv("FEAST_REPO", str(tmp_path / "no_repo"))
         monkeypatch.setenv("MODEL_PATH", str(trained_model_path))
         monkeypatch.setenv("TAKE_THRESHOLD", "1.5")
+        with pytest.raises(ValueError):
+            build_default_app()
+
+
+class TestAbRouting:
+    PAIRS = [f"P{i}__Q{i}" for i in range(400)]
+
+    def _challenger(self) -> FakeModel:
+        model = FakeModel(0.9)
+        model.version = "test-2"
+        return model
+
+    def _ab_client(self, share: float, pairs=None) -> TestClient:
+        rows = {pair: dict(FEATURES) for pair in (pairs or ["KO__PEP"])}
+        return TestClient(
+            create_app(
+                FakeFeatureSource(rows),
+                FakeModel(0.1),
+                challenger=self._challenger(),
+                challenger_share=share,
+            )
+        )
+
+    # Boundary values for the share: none, all, and the two invalid sides.
+    @pytest.mark.parametrize(("share", "variant"), [(0.0, "champion"), (1.0, "challenger")])
+    def test_share_boundaries(self, share, variant):
+        assert {assign_variant(pair, share) for pair in self.PAIRS} == {variant}
+
+    @pytest.mark.parametrize("share", [-0.01, 1.01])
+    def test_invalid_share_rejected(self, share):
+        with pytest.raises(ValueError):
+            assign_variant("KO__PEP", share)
+        with pytest.raises(ValueError):
+            create_app(FakeFeatureSource({}), FakeModel(0.5), challenger_share=share)
+
+    def test_split_is_close_to_the_requested_share(self):
+        share = sum(assign_variant(pair, 0.3) == "challenger" for pair in self.PAIRS) / 400
+        assert 0.22 <= share <= 0.38
+
+    def test_raising_the_share_only_moves_pairs_towards_the_challenger(self):
+        low = {pair for pair in self.PAIRS if assign_variant(pair, 0.2) == "challenger"}
+        high = {pair for pair in self.PAIRS if assign_variant(pair, 0.6) == "challenger"}
+        assert low <= high
+
+    @settings(
+        max_examples=100, deadline=None, suppress_health_check=[HealthCheck.differing_executors]
+    )
+    @given(
+        pair=st.from_regex(r"[A-Z]{1,5}__[A-Z]{1,5}", fullmatch=True),
+        share=st.floats(0, 1, allow_nan=False),
+    )
+    def test_assignment_is_stable(self, pair, share):
+        assert assign_variant(pair, share) == assign_variant(pair, share)
+
+    def test_response_and_metrics_name_the_variant_that_scored(self):
+        client = self._ab_client(1.0)
+        body = client.post("/signal", json={"pair_id": "KO__PEP"}).json()
+        assert (body["variant"], body["model_version"], body["prob"]) == (
+            "challenger",
+            "test-2",
+            0.9,
+        )
+        assert (
+            'signal_api_decisions_total{model_version="test-2",take_trade="true",'
+            'variant="challenger"} 1.0'
+        ) in client.get("/metrics").text
+
+    def test_same_pair_always_gets_the_same_variant_over_http(self):
+        client = self._ab_client(0.5, pairs=self.PAIRS[:40])
+
+        def variants() -> dict[str, str]:
+            return {
+                pair: client.post("/signal", json={"pair_id": pair}).json()["variant"]
+                for pair in self.PAIRS[:40]
+            }
+
+        first = variants()
+        assert variants() == first
+        assert set(first.values()) == {"champion", "challenger"}
+
+    def test_without_a_challenger_everything_is_champion(self, signal_client):
+        body = signal_client.post("/signal", json={"pair_id": "KO__PEP"}).json()
+        assert body["variant"] == "champion"
+
+    def test_default_app_loads_a_registry_challenger_when_present(
+        self, monkeypatch, tmp_path, registry_uri
+    ):
+        from mlflow.tracking import MlflowClient
+
+        MlflowClient(registry_uri).set_registered_model_alias("meta_label", "challenger", "1")
+        monkeypatch.setenv("FEAST_REPO", str(tmp_path / "no_repo"))
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", registry_uri)
+        monkeypatch.setenv("CHALLENGER_SHARE", "2")
         with pytest.raises(ValueError):
             build_default_app()

@@ -115,3 +115,34 @@ class TestPairsStrategySignals:
     def test_get_pair_state_none_before_formation(self):
         strat = PairsStrategy(_cfg(formation_window=100, zscore_window=20), pairs=[("A", "B")])
         assert strat.get_pair_state(("A", "B")) is None
+
+    def test_pair_processed_once_per_day_with_third_symbol(self):
+        """With a third symbol in the event stream, each pair fires exactly once per day.
+
+        Regression for the N-symbol bug: _process_pair was called once per
+        MarketEvent (once per symbol), so with N symbols a pair fired N times
+        per day, inflating bars_in_trade N-fold and triggering time stops early.
+        """
+        strat = PairsStrategy(_cfg(formation_window=100, zscore_window=20, retest_every=9999),
+                              pairs=[("A", "B")])
+        prices_a, prices_b = _make_cointegrated_series(300, seed=7)
+        prices_c = [1.0] * 300  # unrelated third symbol
+
+        all_signals: list[SignalEvent] = []
+        for i in range(300):
+            ts = utc(2020, 1, 1) + timedelta(days=i)
+            for sym, price in [("A", prices_a[i]), ("B", prices_b[i]), ("C", prices_c[i])]:
+                e = MarketEvent(ts=ts, symbol=sym, open=price, high=price,
+                                low=price, close=price, volume=1e6)
+                all_signals.extend(strat.on_market(e))
+
+        # Signals from A/B pair must each have a unique ts per decision
+        by_ts: dict = {}
+        for s in all_signals:
+            by_ts.setdefault(s.ts, []).append(s)
+        # No timestamp should have more than 2 signals (one open/close decision = 2 leg signals)
+        for ts, sigs in by_ts.items():
+            assert len(sigs) <= 2, (
+                f"Pair processed more than once at {ts}: got {len(sigs)} signals. "
+                "Likely N-symbol firing bug still present."
+            )
