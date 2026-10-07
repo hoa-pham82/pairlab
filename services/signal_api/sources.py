@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Protocol
 
 import joblib
-import pandas as pd
 from ml.dataset import ENTITY_COLUMN, PAIR_FEATURE_VIEW, PAIR_FEATURES
+from ml.scoring import score_features
 
 
 class FeatureSource(Protocol):
@@ -52,8 +52,7 @@ class _ClassifierModel:
     _model: object
 
     def predict_proba(self, features: dict[str, float]) -> float:
-        row = pd.DataFrame([[features[name] for name in PAIR_FEATURES]], columns=PAIR_FEATURES)
-        return float(self._model.predict_proba(row)[0, 1])
+        return score_features(self._model, features)
 
 
 class JoblibModel(_ClassifierModel):

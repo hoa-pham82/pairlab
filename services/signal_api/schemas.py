@@ -21,6 +21,7 @@ class SignalResponse(BaseModel):
     take_trade: bool
     threshold: float
     model_version: str
+    variant: str = Field(description="A/B variant that scored the request")
     features: dict[str, float]
 
 

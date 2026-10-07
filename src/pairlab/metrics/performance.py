@@ -148,16 +148,25 @@ def _trade_metrics(
     bars_with_position = 0  # approximation: bars between first and last fill
 
     for sym_fills in by_symbol.values():
-        queue = []
+        long_q: list = []   # open long entries waiting for a sell
+        short_q: list = []  # open short entries waiting for a buy-to-cover
         for f in sorted(sym_fills, key=lambda x: x.ts):
             if f.quantity > 0:
-                queue.append(f)
-            elif queue and f.quantity < 0:
-                entry = queue.pop(0)
-                pnl = -f.quantity * (f.fill_price - entry.fill_price) - f.commission - entry.commission
-                pnls.append(pnl)
-                dur = (f.ts - entry.ts).days
-                holding_bars.append(dur)
+                if short_q:  # buy-to-cover closes a short
+                    entry = short_q.pop(0)
+                    pnl = (-entry.quantity) * (entry.fill_price - f.fill_price) - f.commission - entry.commission
+                    pnls.append(pnl)
+                    holding_bars.append((f.ts - entry.ts).days)
+                else:
+                    long_q.append(f)
+            elif f.quantity < 0:
+                if long_q:  # sell closes a long
+                    entry = long_q.pop(0)
+                    pnl = entry.quantity * (f.fill_price - entry.fill_price) - f.commission - entry.commission
+                    pnls.append(pnl)
+                    holding_bars.append((f.ts - entry.ts).days)
+                else:
+                    short_q.append(f)
             total_volume += abs(f.quantity) * f.fill_price
 
     n_trades = len(pnls)

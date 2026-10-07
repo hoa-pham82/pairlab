@@ -51,7 +51,10 @@ class PairsStrategy(BaseStrategy):
             lambda: deque(maxlen=config.formation_window + config.zscore_window + 10)
         )
         self._pair_state: dict[tuple[str, str], PairState] = {}
-        self._bar_count = 0
+        # Tracks the last bar timestamp seen per symbol.  A pair is processed only
+        # when both legs share the same current timestamp, so each pair fires exactly
+        # once per trading day regardless of symbol ordering in the event queue.
+        self._last_ts: dict[str, datetime | None] = defaultdict(lambda: None)
 
     # ------------------------------------------------------------------
     # BaseStrategy interface
@@ -63,11 +66,18 @@ class PairsStrategy(BaseStrategy):
             return []
 
         self._price_history[event.symbol].append(event.close)
-        self._bar_count += 1
+        self._last_ts[event.symbol] = event.ts
 
         signals: list[SignalEvent] = []
 
         for pair in self._candidate_pairs:
+            sym_a, sym_b = pair
+            # Guard: only process when both legs have a bar at this timestamp.
+            # Without this, a pair would be evaluated N times per day (once per
+            # symbol's MarketEvent), causing bars_in_trade / bars_since_retest to
+            # count N-fold and time stops to fire N times too early.
+            if self._last_ts[sym_a] != event.ts or self._last_ts[sym_b] != event.ts:
+                continue
             sig = self._process_pair(pair, event.ts)
             signals.extend(sig)
 

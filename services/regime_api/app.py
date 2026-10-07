@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.concurrency import run_in_threadpool
 from prometheus_client import Counter, Gauge
 
-from services.common import HttpMetrics
+from services.common import HttpMetrics, setup_tracing
 from services.regime_api.drift import assess_pair
 from services.regime_api.schemas import Health, RegimeRequest, RegimeResponse
 from services.regime_api.sources import PriceSource
@@ -20,6 +20,7 @@ DEFAULT_DSN = "postgresql://pairlab:pairlab@localhost:5432/pairlab"
 
 def create_app(prices: PriceSource) -> FastAPI:
     """Build the app around a price source."""
+    setup_tracing("regime_api")
     app = FastAPI(title="pairlab regime API", version="0.1.0")
     metrics = HttpMetrics("regime_api")
     metrics.install(app)

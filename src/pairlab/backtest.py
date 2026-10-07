@@ -14,6 +14,7 @@ from pairlab.execution.simulated import SimulatedExecutionHandler
 from pairlab.metrics.performance import PerformanceMetrics, compute_metrics
 from pairlab.metrics.tearsheet import save_tearsheet
 from pairlab.portfolio import Portfolio
+from pairlab.strategy.base import BaseStrategy
 from pairlab.strategy.pairs import PairsStrategy
 
 
@@ -31,6 +32,7 @@ def run_backtest(
     bars,           # pd.DataFrame
     universe: Universe | None = None,
     pairs: list[tuple[str, str]] | None = None,
+    strategy: BaseStrategy | None = None,
 ) -> BacktestResult:
     """Run the full event-driven backtest loop.
 
@@ -39,6 +41,7 @@ def run_backtest(
         bars: normalised daily-bars DataFrame.
         universe: optional point-in-time universe; built from bars if None.
         pairs: candidate pairs; defaults to all pairs from symbols in bars.
+        strategy: strategy instance; defaults to PairsStrategy(cfg.strategy, pairs).
 
     Returns:
         BacktestResult with metrics, equity curve, fills.
@@ -59,7 +62,8 @@ def run_backtest(
     bars_filtered = bars[(bars["ts"] >= start_ts) & (bars["ts"] <= end_ts)]
 
     handler = PointInTimeDataHandler(bars_filtered, universe)
-    strategy = PairsStrategy(cfg.strategy, pairs)
+    if strategy is None:
+        strategy = PairsStrategy(cfg.strategy, pairs)
     portfolio = Portfolio(cfg.portfolio, cfg.costs)
     execution = SimulatedExecutionHandler(cfg.costs)
     queue = EventQueue()
