@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import lit
@@ -27,8 +28,8 @@ def build_spark(s3_endpoint: str, app_name: str = "DP1-Baseline") -> SparkSessio
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint)
-        .config("spark.hadoop.fs.s3a.access.key", "test")
-        .config("spark.hadoop.fs.s3a.secret.key", "test")
+        .config("spark.hadoop.fs.s3a.access.key", os.environ.get("AWS_ACCESS_KEY_ID", "pairlabs3"))
+        .config("spark.hadoop.fs.s3a.secret.key", os.environ.get("AWS_SECRET_ACCESS_KEY", "pairlabs3key"))
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
@@ -45,8 +46,13 @@ def run(s3_endpoint: str) -> None:
 
     print("=== DP1 BASELINE: reading vendor-raw/daily_bars/ ===")
 
-    # Baseline: read without mergeSchema — will fail/lose cols when schema evolves
-    df = spark.read.parquet(f"s3a://vendor-raw/daily_bars/")
+    # Baseline: read without mergeSchema — will fail/lose cols when schema evolves.
+    # Targets schema_version= subdirs explicitly to skip legacy dt= partitions.
+    df = spark.read.parquet(
+        "s3a://vendor-raw/daily_bars/schema_version=1/",
+        "s3a://vendor-raw/daily_bars/schema_version=2/",
+        "s3a://vendor-raw/daily_bars/schema_version=3/",
+    )
 
     print(f"Schema: {df.schema.simpleString()}")
     print(f"Row count (raw): {df.count()}")

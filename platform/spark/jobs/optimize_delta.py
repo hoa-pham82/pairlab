@@ -13,6 +13,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import os
 import time
 
 from pyspark.sql import SparkSession
@@ -24,8 +25,8 @@ def build_spark(s3_endpoint: str) -> SparkSession:
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint)
-        .config("spark.hadoop.fs.s3a.access.key", "test")
-        .config("spark.hadoop.fs.s3a.secret.key", "test")
+        .config("spark.hadoop.fs.s3a.access.key", os.environ.get("AWS_ACCESS_KEY_ID", "pairlabs3"))
+        .config("spark.hadoop.fs.s3a.secret.key", os.environ.get("AWS_SECRET_ACCESS_KEY", "pairlabs3key"))
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")

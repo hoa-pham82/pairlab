@@ -16,6 +16,7 @@ org.postgresql:postgresql:42.7.3 \
 from __future__ import annotations
 
 import argparse
+import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
@@ -38,8 +39,8 @@ def build_spark(s3_endpoint: str, pg_url: str) -> SparkSession:
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint)
-        .config("spark.hadoop.fs.s3a.access.key", "test")
-        .config("spark.hadoop.fs.s3a.secret.key", "test")
+        .config("spark.hadoop.fs.s3a.access.key", os.environ.get("AWS_ACCESS_KEY_ID", "pairlabs3"))
+        .config("spark.hadoop.fs.s3a.secret.key", os.environ.get("AWS_SECRET_ACCESS_KEY", "pairlabs3key"))
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
@@ -77,8 +78,14 @@ def _upsert_dim_symbol_scd2(spark: SparkSession, silver_df, s3_endpoint: str) ->
     """
     dim_path = "s3a://delta-lake/gold/dim_symbol/"
 
-    # Read sector from symbol master (one row per symbol)
-    master = spark.read.parquet("s3a://vendor-raw/symbol_master.parquet").select("symbol", "sector")
+    # Read only current rows from symbol master (SCD2 master has one historical row
+    # per sector change; using all rows would give multiple source rows per symbol
+    # and cause the MERGE to raise DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW).
+    master = (
+        spark.read.parquet("s3a://vendor-raw/symbol_master.parquet")
+        .filter(col("is_current") == True)  # noqa: E712
+        .select("symbol", "sector")
+    )
 
     # One distinct symbol per current silver partition
     symbols = silver_df.select("symbol").distinct()

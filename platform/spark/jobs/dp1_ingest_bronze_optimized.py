@@ -15,6 +15,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
@@ -42,8 +43,8 @@ def build_spark(s3_endpoint: str, app_name: str = "DP1-Optimized") -> SparkSessi
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.hadoop.fs.s3a.endpoint", s3_endpoint)
-        .config("spark.hadoop.fs.s3a.access.key", "test")
-        .config("spark.hadoop.fs.s3a.secret.key", "test")
+        .config("spark.hadoop.fs.s3a.access.key", os.environ.get("AWS_ACCESS_KEY_ID", "pairlabs3"))
+        .config("spark.hadoop.fs.s3a.secret.key", os.environ.get("AWS_SECRET_ACCESS_KEY", "pairlabs3key"))
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
@@ -56,13 +57,26 @@ def build_spark(s3_endpoint: str, app_name: str = "DP1-Optimized") -> SparkSessi
 
 
 def _normalize_schema(df):
-    """Add missing columns from schema evolution (v2 adds adj_close, v3 adds source_exchange)."""
+    """Unify schema across v1/v2/v3 into a single superset schema.
+
+    v3 renamed volume→vol; mergeSchema gives us both columns with nulls on the
+    wrong side.  Coalesce them into a single volume column and drop vol so the
+    Delta table always sees the same column set regardless of which versions
+    are present.
+    """
+    from pyspark.sql.functions import coalesce
+    if "vol" in df.columns:
+        # v3 rows: vol is populated, volume is null — coalesce keeps whichever is non-null
+        df = df.withColumn("volume", coalesce(col("volume"), col("vol")).cast(DoubleType()))
+        df = df.drop("vol")
     if "adj_close" not in df.columns:
-        df = df.withColumn("adj_close", col("close"))  # v1 files: assume adj_close = close
+        df = df.withColumn("adj_close", col("close").cast(DoubleType()))
     if "source_exchange" not in df.columns:
-        df = df.withColumn("source_exchange", lit(None).cast(StringType()))  # v3 column missing in v1/v2
+        df = df.withColumn("source_exchange", lit(None).cast(StringType()))
     if "schema_version" not in df.columns:
         df = df.withColumn("schema_version", lit(1).cast(ShortType()))
+    else:
+        df = df.withColumn("schema_version", col("schema_version").cast(ShortType()))
     return df
 
 
@@ -104,11 +118,18 @@ def run(s3_endpoint: str) -> None:
     spark.sparkContext.setLogLevel("WARN")
     print("=== DP1 OPTIMIZED: reading vendor-raw/daily_bars/ ===")
 
-    # Schema evolution: mergeSchema unifies all partition schemas into a superset
+    # Read only schema_version= partitions (avoids Spark partition-column conflict with
+    # legacy dt= directories that may still exist in the same prefix).
+    # basePath tells Spark the root so schema_version is inferred as a partition column.
     df = (
         spark.read
         .option("mergeSchema", "true")
-        .parquet("s3a://vendor-raw/daily_bars/")
+        .option("basePath", "s3a://vendor-raw/daily_bars/")
+        .parquet(
+            "s3a://vendor-raw/daily_bars/schema_version=1/",
+            "s3a://vendor-raw/daily_bars/schema_version=2/",
+            "s3a://vendor-raw/daily_bars/schema_version=3/",
+        )
     )
     print(f"Raw rows: {df.count()}")
 
