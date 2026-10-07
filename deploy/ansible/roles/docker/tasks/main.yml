@@ -1,0 +1,41 @@
+---
+- name: Check if Docker is already installed
+  ansible.builtin.command: docker --version
+  register: docker_check
+  changed_when: false
+  failed_when: false
+
+- name: Add Docker deb822 repository (idempotent)
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: deb
+    uris: https://download.docker.com/linux/debian
+    suites: "{{ ansible_distribution_release }}"
+    components: stable
+    architectures: "{{ ansible_architecture | replace('x86_64', 'amd64') }}"
+    signed_by: https://download.docker.com/linux/debian/gpg
+    state: present
+  when: docker_check.rc != 0
+
+- name: Install Docker Engine and Compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    update_cache: true
+    state: present
+  when: docker_check.rc != 0
+
+- name: Add deploy user to docker group
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: true
+
+- name: Ensure Docker daemon is started and enabled
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true

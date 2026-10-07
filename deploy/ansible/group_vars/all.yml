@@ -1,0 +1,12 @@
+---
+# pairlab_repo_url: set on the command line or override here
+# pairlab_repo_url: "https://github.com/your-org/pairlab.git"
+
+# Vault-sourced secrets — override with ansible-vault encrypted vars or pass at runtime:
+# ansible-playbook site.yml -e vault_minio_access_key=pairlabs3 ...
+vault_minio_access_key: "{{ lookup('env', 'MINIO_ROOT_USER') }}"
+vault_minio_secret_key: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') }}"
+vault_gateway_user:     "{{ lookup('env', 'GATEWAY_USER') }}"
+vault_gateway_password: "{{ lookup('env', 'GATEWAY_PASSWORD') }}"
+vault_root_token:       "{{ lookup('env', 'VAULT_TOKEN') }}"
+airflow_fernet_key:     "{{ lookup('env', 'AIRFLOW__CORE__FERNET_KEY') }}"

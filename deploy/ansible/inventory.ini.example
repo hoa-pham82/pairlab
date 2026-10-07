@@ -1,0 +1,3 @@
+# Replace EXTERNAL_IP with the output of `terraform output -raw vm_external_ip`
+[pairlab]
+pairlab-node ansible_host=EXTERNAL_IP ansible_user=debian ansible_ssh_private_key_file=~/.ssh/google_compute_engine

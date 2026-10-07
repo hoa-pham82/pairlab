@@ -1,0 +1,10 @@
+---
+# Deploy pairlab stack onto the GCE VM provisioned by Terraform.
+# Usage: ansible-playbook -i inventory.ini site.yml
+- name: Deploy pairlab platform
+  hosts: pairlab
+  become: true
+  roles:
+    - common
+    - docker
+    - platform

@@ -1,0 +1,8 @@
+---
+- name: Restart compose stack
+  community.docker.docker_compose_v2:
+    project_src: /opt/pairlab/platform
+    files: [compose.yml]
+    profiles: [core, ml, obs, gateway]
+    env_files: [/opt/pairlab/.env]
+    state: restarted

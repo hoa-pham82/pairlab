@@ -1,0 +1,46 @@
+---
+- name: Create app directory
+  ansible.builtin.file:
+    path: /opt/pairlab
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Sync pairlab source to VM
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../../"
+    dest: /opt/pairlab/
+    use_ssh_args: true
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=.venv"
+      - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+      - "--exclude=.env"
+      - "--exclude=deploy/terraform/.terraform"
+      - "--exclude=deploy/terraform/terraform.tfstate*"
+      - "--exclude=models/"
+      - "--exclude=data/"
+
+- name: Copy .env from Vault (via env template)
+  ansible.builtin.template:
+    src: env.j2
+    dest: /opt/pairlab/.env
+    owner: "{{ ansible_user }}"
+    mode: "0600"
+
+- name: Pull and start core + ml stack
+  community.docker.docker_compose_v2:
+    project_src: /opt/pairlab/platform
+    files:
+      - compose.yml
+    profiles:
+      - core
+      - ml
+      - obs
+      - gateway
+    env_files:
+      - /opt/pairlab/.env
+    state: present
+    pull: always
+  become_user: "{{ ansible_user }}"
