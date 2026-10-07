@@ -1,7 +1,8 @@
-"""Pieces shared by the web APIs: pair-ID validation and Prometheus metrics."""
+"""Pieces shared by the web APIs: pair-ID validation, Prometheus metrics, and OTel tracing."""
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Annotated
 
@@ -57,3 +58,31 @@ class HttpMetrics:
         @app.get("/metrics", include_in_schema=False)
         async def metrics() -> Response:
             return Response(generate_latest(self.registry), media_type=CONTENT_TYPE_LATEST)
+
+
+def setup_tracing(service_name: str) -> None:
+    """Initialise OpenTelemetry tracing and instrument FastAPI.
+
+    Sends spans to the OTLP HTTP endpoint (Tempo in Docker, or OTEL_EXPORTER_OTLP_ENDPOINT).
+    No-ops gracefully if the exporter cannot connect.
+    """
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError:
+        return  # OTel not installed; skip silently
+
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        return  # no endpoint configured; skip tracing (e.g. unit tests on host)
+    resource = Resource.create({SERVICE_NAME: service_name})
+    provider = TracerProvider(resource=resource)
+    provider.add_span_processor(
+        BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"))
+    )
+    trace.set_tracer_provider(provider)
+    FastAPIInstrumentor().instrument()

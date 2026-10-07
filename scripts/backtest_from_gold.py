@@ -22,19 +22,20 @@ _PARQUET_PATH = Path("data/gold_obt.parquet")
 
 
 def _load_obt_from_postgres(dsn: str) -> pd.DataFrame:
-    """Read gold.obt_pair_backtest_input from Postgres and return a normalised DataFrame.
+    """Read gold.fact_daily_bar from Postgres and return a normalised DataFrame.
 
+    Reads all symbols so both legs of every pair are present.
     ts is stored as Unix nanoseconds; converted here before handing to the engine.
     """
     import psycopg2  # intentional: infra import stays outside src/pairlab
 
     with psycopg2.connect(dsn) as conn:
         df = pd.read_sql_query(
-            "SELECT symbol_a AS symbol, "
+            "SELECT symbol, "
             "  to_timestamp(ts / 1e9) AT TIME ZONE 'UTC' AS ts, "
-            "  open_a AS open, high_a AS high, low_a AS low, "
-            "  close_a AS close, volume_a AS volume "
-            "FROM gold.obt_pair_backtest_input",
+            "  open, high, low, close, volume "
+            "FROM gold.fact_daily_bar "
+            "ORDER BY ts, symbol",
             conn,
         )
     return _normalise(df)
